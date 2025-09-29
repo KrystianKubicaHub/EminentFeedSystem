@@ -1,0 +1,8 @@
+/build/
+*.o
+*.a
+*.so
+*.swp
+*.DS_Store
+Testing/Temporary/CTestCostData.txt
+Testing/Temporary/LastTest.log
