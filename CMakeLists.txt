@@ -79,3 +79,27 @@ target_include_directories(test_transport_layer PRIVATE
 
 add_test(NAME test_transport_layer COMMAND test_transport_layer)
 
+
+add_library(physical_layer
+    physical_layer/src/physical_layer.cpp
+)
+
+target_include_directories(physical_layer PUBLIC
+    physical_layer/include
+)
+
+add_executable(test_physical_layer
+    physical_layer/tests/test_physical_layer.cpp
+)
+
+target_link_libraries(test_physical_layer
+    physical_layer
+    GTest::GTest
+    GTest::Main
+)
+
+target_include_directories(test_physical_layer PRIVATE
+    physical_layer/include
+)
+
+add_test(NAME test_physical_layer COMMAND test_physical_layer)
