@@ -8,12 +8,12 @@ using namespace std;
 
 
 EminentSdk::EminentSdk()
-        : sessionManager_(
-                outgoingQueue_,
-                [this](const Message& msg) { this->handleReceivedMessage(msg); }
-            ),
-            transportLayer_(sessionManager_.getOutgoingPackages()),
-            physicalLayer_(12345, "127.0.0.1", 12346)
+    : sessionManager_(
+        outgoingQueue_,
+        [this](const Message& msg) { this->handleReceivedMessage(msg); }
+        ),
+        transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_),
+        physicalLayer_(12345, "127.0.0.1", 12346)
 {
 }
 

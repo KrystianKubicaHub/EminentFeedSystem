@@ -33,6 +33,7 @@ add_library(transport_layer
 
 target_include_directories(transport_layer PUBLIC
     transport_layer/include
+    session_manager/include
 )
 
 

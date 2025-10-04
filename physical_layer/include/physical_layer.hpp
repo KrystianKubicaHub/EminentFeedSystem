@@ -5,7 +5,8 @@
 #include <cstdint>
 #include <string>
 
-using Frame = std::vector<uint8_t>;
+
+#include <common_types.hpp>
 
 class PhysicalLayerUdp {
 public:

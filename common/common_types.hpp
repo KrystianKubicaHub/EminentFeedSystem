@@ -44,7 +44,11 @@ enum class PackageStatus {
     FAILED
 };
 
+struct Frame {
+    std::vector<uint8_t> data;
+};
 struct Package {
+
     PackageId packageId;
     MessageId messageId;
     ConnectionId connId;
