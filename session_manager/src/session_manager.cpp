@@ -1,95 +1,125 @@
 #include "session_manager.hpp"
 #include <iostream>
 #include <chrono>
+#include <algorithm>
+#include <thread>
+#include <mutex>
+#include <thread>
 
 using namespace std;
 using namespace std::chrono;
 
-SessionManager::SessionManager(int packageSize) : packageSize_(packageSize) {}
 
-void SessionManager::enqueueMessage(
-    MessageId messageId,
-    ConnectionId connectionId,
-    const string& payload,
-    MessageFormat format,
-    Priority priority,
-    bool requireAck
-) {
-    int offset = 0;
-    while (offset < (int)payload.size()) {
-        string fragment = payload.substr(offset, packageSize_);
-        offset += packageSize_;
-
-        Package pkg{
-            nextPackageId_++,
-            messageId,
-            connectionId,
-            fragment,
-            format,
-            priority,
-            requireAck
-        };
-
-        outgoingQueue_.push(pkg);
-    }
-}
-
-bool SessionManager::getNextPackage(Package& out) {
-    if (outgoingQueue_.empty()) return false;
-
-    out = outgoingQueue_.front();
-    outgoingQueue_.pop();
-
-    out.status = Package::Status::SENT;
-    out.lastSendTime = steady_clock::now();
-
-    inFlight_[out.packageId] = out;
-
-    return true;
-}
-
-void SessionManager::ackPackage(PackageId packageId) {
-    auto it = inFlight_.find(packageId);
-    if (it != inFlight_.end()) {
-        it->second.status = Package::Status::ACKED;
-        inFlight_.erase(it);
-    }
-}
-
-void SessionManager::checkTimeouts(int timeoutMs) {
-    auto now = steady_clock::now();
-
-    vector<PackageId> toRetry;
-    for (auto& [pid, pkg] : inFlight_) {
-        if (pkg.status == Package::Status::SENT) {
-            auto elapsed = duration_cast<milliseconds>(now - pkg.lastSendTime).count();
-            if (elapsed > timeoutMs) {
-                toRetry.push_back(pid);
+SessionManager::SessionManager(std::queue<Message>& sdkQueue, OnMessageCallback onMessage, size_t maxPacketSize)
+    : sdkQueue_(sdkQueue), maxPacketSize_(maxPacketSize), onMessage_(onMessage) {
+    worker_ = std::thread([this]() {
+        while (!stopWorker_) {
+            {
+                std::lock_guard<std::mutex> lock(queueMutex_);
+                std::queue<Message> tmp = sdkQueue_;
+                std::vector<Message> toProcess;
+                while (!tmp.empty()) {
+                    const Message& msg = tmp.front();
+                    if (!messageStatus_[msg.id]) {
+                        toProcess.push_back(msg);
+                    }
+                    tmp.pop();
+                }
+                for (const Message& msg : toProcess) {
+                    int total = (msg.payload.size() + maxPacketSize_ - 1) / maxPacketSize_;
+                    for (int frag = 0; frag < total; ++frag) {
+                        std::string fragment = msg.payload.substr(frag * maxPacketSize_, maxPacketSize_);
+                        Package pkg{
+                            nextPackageId_++,
+                            msg.id,
+                            msg.connId,
+                            frag,
+                            total,
+                            fragment,
+                            msg.format,
+                            msg.priority,
+                            msg.requireAck,
+                            PackageStatus::QUEUED
+                        };
+                        outgoingPackages_.push(pkg);
+                    }
+                    messageStatus_[msg.id] = true;
+                }
             }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+    });
+}
+
+SessionManager::~SessionManager() {
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        stopWorker_ = true;
     }
+    if (worker_.joinable()) worker_.join();
+}
 
-    for (auto pid : toRetry) {
-        auto it = inFlight_.find(pid);
-        if (it != inFlight_.end()) {
-            Package retryPkg = it->second;
-            retryPkg.status = Package::Status::RETRY_PENDING;
-            retryPkg.retryCount++;
-            retryPkg.lastSendTime = steady_clock::now();
-
-            outgoingQueue_.push(retryPkg);
-
-            inFlight_[pid] = retryPkg;
+void SessionManager::processMessages() {
+    std::queue<Message> tmp = sdkQueue_;
+    std::vector<Message> toProcess;
+    while (!tmp.empty()) {
+        const Message& msg = tmp.front();
+        if (!messageStatus_[msg.id]) {
+            toProcess.push_back(msg);
         }
+        tmp.pop();
+    }
+    for (const Message& msg : toProcess) {
+        int total = (msg.payload.size() + maxPacketSize_ - 1) / maxPacketSize_;
+        for (int frag = 0; frag < total; ++frag) {
+            std::string fragment = msg.payload.substr(frag * maxPacketSize_, maxPacketSize_);
+            Package pkg{
+                nextPackageId_++,
+                msg.id,
+                msg.connId,
+                frag,
+                total,
+                fragment,
+                msg.format,
+                msg.priority,
+                msg.requireAck,
+                PackageStatus::QUEUED
+            };
+            outgoingPackages_.push(pkg);
+        }
+        messageStatus_[msg.id] = true;
     }
 }
 
-SessionStats SessionManager::getStats() const {
-    SessionStats stats;
-    stats.totalPackages = nextPackageId_ - 1;
-    stats.inFlight = (int)inFlight_.size();
-    for (auto& [_, pkg] : inFlight_) {
-        stats.retransmissions += pkg.retryCount;
+void SessionManager::receivePackage(const Package& pkg) {
+
+    receivedPackages_[pkg.messageId].push_back(pkg);
+    auto& vec = receivedPackages_[pkg.messageId];
+
+    if ((int)vec.size() < pkg.fragmentsCount) return;
+
+    std::sort(vec.begin(), vec.end(), [](const Package& a, const Package& b) { return a.fragmentId < b.fragmentId; });
+    std::string fullPayload;
+
+    for (int i = 0; i < pkg.fragmentsCount; ++i) {
+        if (vec[i].fragmentId != i) return;
+        fullPayload += vec[i].payload;
     }
-    return stats;
+
+    Message msg{
+        pkg.messageId,
+        pkg.connId,
+        fullPayload,
+        pkg.format,
+        pkg.priority,
+        pkg.requireAck,
+        nullptr
+    };
+    
+    if (onMessage_) onMessage_(msg);
+    
+    receivedPackages_.erase(pkg.messageId);
 }
+
+
+

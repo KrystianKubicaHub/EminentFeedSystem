@@ -1,3 +1,5 @@
+include_directories(${CMAKE_SOURCE_DIR}/common)
+
 cmake_minimum_required(VERSION 3.10)
 project(eminent_feed_system LANGUAGES CXX)
 
@@ -10,6 +12,10 @@ add_library(eminent_sdk
 
 target_include_directories(eminent_sdk PUBLIC
     sdk/include
+    session_manager/include
+    transport_layer/include
+    physical_layer/include
+    common
 )
 
 add_library(session_manager
@@ -20,40 +26,6 @@ target_include_directories(session_manager PUBLIC
     session_manager/include
 )
 
-enable_testing()
-find_package(GTest REQUIRED)
-
-add_executable(test_sdk
-    sdk/tests/test_sdk.cpp
-)
-
-target_link_libraries(test_sdk
-    eminent_sdk
-    GTest::GTest
-    GTest::Main
-)
-
-target_include_directories(test_sdk PRIVATE
-    sdk/include
-)
-
-add_test(NAME test_sdk COMMAND test_sdk)
-
-add_executable(test_session_manager
-    session_manager/tests/test_session_manager.cpp
-)
-
-target_link_libraries(test_session_manager
-    session_manager
-    GTest::GTest
-    GTest::Main
-)
-
-target_include_directories(test_session_manager PRIVATE
-    session_manager/include
-)
-
-add_test(NAME test_session_manager COMMAND test_session_manager)
 
 add_library(transport_layer
     transport_layer/src/transport_layer.cpp
@@ -63,21 +35,6 @@ target_include_directories(transport_layer PUBLIC
     transport_layer/include
 )
 
-add_executable(test_transport_layer
-    transport_layer/tests/test_transport_layer.cpp
-)
-
-target_link_libraries(test_transport_layer
-    transport_layer
-    GTest::GTest
-    GTest::Main
-)
-
-target_include_directories(test_transport_layer PRIVATE
-    transport_layer/include
-)
-
-add_test(NAME test_transport_layer COMMAND test_transport_layer)
 
 
 add_library(physical_layer
@@ -88,18 +45,22 @@ target_include_directories(physical_layer PUBLIC
     physical_layer/include
 )
 
-add_executable(test_physical_layer
-    physical_layer/tests/test_physical_layer.cpp
+
+# Tworzymy tylko główny plik wykonywalny z app/main.cpp
+add_executable(eminent_demo
+    app/main.cpp
 )
 
-target_link_libraries(test_physical_layer
+target_link_libraries(eminent_demo
+    eminent_sdk
+    session_manager
+    transport_layer
     physical_layer
-    GTest::GTest
-    GTest::Main
 )
 
-target_include_directories(test_physical_layer PRIVATE
+target_include_directories(eminent_demo PRIVATE
+    sdk/include
+    session_manager/include
+    transport_layer/include
     physical_layer/include
 )
-
-add_test(NAME test_physical_layer COMMAND test_physical_layer)

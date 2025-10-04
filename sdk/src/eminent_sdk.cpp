@@ -1,10 +1,30 @@
+#include "session_manager.hpp"
+#include "transport_layer.hpp"
+#include "physical_layer.hpp"
 #include "eminent_sdk.hpp"
 #include <iostream>
 
-using std::cout;
-using std::endl;
-using std::string;
-using std::function;
+using namespace std;
+
+
+EminentSdk::EminentSdk()
+        : sessionManager_(
+                outgoingQueue_,
+                [this](const Message& msg) { this->handleReceivedMessage(msg); }
+            ),
+            transportLayer_(sessionManager_.getOutgoingPackages()),
+            physicalLayer_(12345, "127.0.0.1", 12346)
+{
+}
+
+void EminentSdk::handleReceivedMessage(const Message& msg) {
+    auto it = connections_.find(msg.connId);
+    if (it != connections_.end() && it->second.status == ConnectionStatus::ACTIVE) {
+        if (it->second.onMessage) {
+            it->second.onMessage(msg);
+        }
+    }
+}
 
 void EminentSdk::initialize(
     DeviceId selfId,
@@ -12,18 +32,16 @@ void EminentSdk::initialize(
     function<void(const string&)> onFailure,
     function<void(DeviceId)> onIncomingConnection
 ) {
+    if (initialized_) {
+        if (onFailure) {
+            onFailure("SDK already initialized");
+        }
+        return;
+    }
     deviceId_ = selfId;
     onIncomingConnection_ = onIncomingConnection;
-
+    initialized_ = true;
     cout << "SDK initialized for device: " << selfId << endl;
-
-    MessageId mid = nextMsgId_++;
-    string handshakePayload = "HANDSHAKE_FROM:" + std::to_string(selfId);
-    Message handshake{ mid, 0, handshakePayload, MessageFormat::HANDSHAKE, 10, true, nullptr };
-    outgoingQueue_.push(handshake);
-
-    cout << "Handshake message queued with ID " << mid << endl;
-
     if (onSuccess) {
         onSuccess();
     }
@@ -35,7 +53,9 @@ void EminentSdk::connect(
     function<void(ConnectionId)> onSuccess,
     function<void(const string&)> onFailure,
     function<void(const string&)> onTrouble,
-    function<void()> onDisconnected
+    function<void()> onDisconnected,
+    function<void(ConnectionId)> onConnected,
+    function<void(const Message&)> onMessage
 ) {
     if (targetId <= 0) {
         if (onFailure) {
@@ -45,12 +65,33 @@ void EminentSdk::connect(
     }
 
     ConnectionId cid = nextConnectionId_++;
-    connections_[cid] = { cid, targetId, defaultPriority, nullptr, onTrouble, onDisconnected };
+    Connection conn;
+    conn.id = cid;
+    conn.remoteId = targetId;
+    conn.defaultPriority = defaultPriority;
+    conn.onMessage = onMessage;
+    conn.onTrouble = onTrouble;
+    conn.onDisconnected = onDisconnected;
+    conn.onConnected = onConnected;
+    conn.status = ConnectionStatus::PENDING;
+    connections_[cid] = conn;
 
-    cout << "Connecting to device " << targetId << " with connection ID " << cid << endl;
-    if (onSuccess) {
-        onSuccess(cid);
-    }
+    MessageId mid = nextMsgId_++;
+    string payload = "ipockowanfwa";
+    Message handshakeMsg{
+        mid,
+        cid,
+        payload,
+        MessageFormat::HANDSHAKE,
+        defaultPriority,
+        true,
+        [onSuccess, cid]() {
+            if (onSuccess) onSuccess(cid);
+        }
+    };
+    outgoingQueue_.push(handshakeMsg);
+
+    cout << "trying to connect to device " << targetId << " with connection ID " << cid << endl;
 }
 
 void EminentSdk::close(ConnectionId id) {
@@ -69,12 +110,13 @@ void EminentSdk::send(
     MessageFormat format,
     Priority priority,
     bool requireAck,
-    function<void(MessageId)> onQueued,
     function<void()> onDelivered
 ) {
     if (!connections_.count(id)) {
-        cout << "Send failed: invalid connection ID." << endl;
-        return;
+        throw std::runtime_error("Send failed: invalid connection ID.");
+    }
+    if (connections_[id].status == ConnectionStatus::PENDING) {
+        throw std::runtime_error("Send failed: connection is still pending.");
     }
 
     MessageId mid = nextMsgId_++;
@@ -82,27 +124,6 @@ void EminentSdk::send(
     outgoingQueue_.push(msg);
 
     cout << "Message queued with ID " << mid << " on connection " << id << endl;
-    if (onQueued) {
-        onQueued(mid);
-    }
-
-    if (connections_[id].onMessage) {
-        connections_[id].onMessage(payload);
-    }
-
-    if (onDelivered) {
-        onDelivered();
-    }
-}
-
-void EminentSdk::listen(
-    ConnectionId id,
-    function<void(const string&)> onMessage
-) {
-    if (connections_.count(id)) {
-        connections_[id].onMessage = onMessage;
-        cout << "Listening on connection " << id << endl;
-    }
 }
 
 void EminentSdk::getStats(

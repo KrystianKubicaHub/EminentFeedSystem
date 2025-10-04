@@ -5,70 +5,42 @@
 #include <vector>
 #include <chrono>
 #include <optional>
+#include <common_types.hpp>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
-using std::string;
-using std::queue;
-using std::unordered_map;
-using std::vector;
+using namespace std;
 
-using ConnectionId = int;
-using MessageId = int;
-using PackageId = int;
-using Priority = int;
+// aliasy typów w common_types.hpp
 
-enum class MessageFormat {
-    JSON,
-    VIDEO
-};
 
-struct Package {
-    PackageId packageId;
-    MessageId messageId;
-    ConnectionId connectionId;
-    string payload;
-    MessageFormat format;
-    Priority priority;
-    bool requireAck;
 
-    enum class Status { REGISTERED, SENT, ACKED, RETRY_PENDING };
-    Status status = Status::REGISTERED;
-
-    int retryCount = 0;
-    std::chrono::steady_clock::time_point lastSendTime;
-};
-
-struct SessionStats {
-    int totalMessages = 0;
-    int totalPackages = 0;
-    int inFlight = 0;
-    int retransmissions = 0;
-};
 
 class SessionManager {
 public:
-    explicit SessionManager(int packageSize = 100);
+    using OnMessageCallback = std::function<void(const Message&)>;
 
-    void enqueueMessage(
-        MessageId messageId,
-        ConnectionId connectionId,
-        const string& payload,
-        MessageFormat format,
-        Priority priority,
-        bool requireAck
-    );
+    SessionManager(std::queue<Message>& sdkQueue, OnMessageCallback onMessage = nullptr, size_t maxPacketSize = 256);
 
-    bool getNextPackage(Package& out);
+    void processMessages();
 
-    void ackPackage(PackageId packageId);
-
-    void checkTimeouts(int timeoutMs);
-
-    SessionStats getStats() const;
+    void setOnMessageCallback(OnMessageCallback cb) { onMessage_ = cb; }
 
 private:
-    int packageSize_;
+    std::queue<Message>& sdkQueue_;
+    size_t maxPacketSize_;
     PackageId nextPackageId_ = 1;
-
-    queue<Package> outgoingQueue_;
-    unordered_map<PackageId, Package> inFlight_;
+    OnMessageCallback onMessage_ = nullptr;
+    std::queue<Package> outgoingPackages_;
+    std::unordered_map<MessageId, bool> messageStatus_; // true = SENT
+    std::unordered_map<MessageId, std::vector<Package>> receivedPackages_;
+    std::thread worker_;
+    std::mutex queueMutex_;
+    bool stopWorker_ = false;
+public:
+    bool getNextPackage(Package& out);
+    void receivePackage(const Package& pkg);
+    std::queue<Package>& getOutgoingPackages() { return outgoingPackages_; }
+    ~SessionManager();
 };
