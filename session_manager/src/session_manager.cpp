@@ -1,4 +1,5 @@
 #include "session_manager.hpp"
+#include "eminent_sdk.hpp"
 #include <iostream>
 #include <chrono>
 #include <algorithm>
@@ -10,8 +11,8 @@ using namespace std;
 using namespace std::chrono;
 
 
-SessionManager::SessionManager(std::queue<Message>& sdkQueue, OnMessageCallback onMessage, size_t maxPacketSize)
-    : sdkQueue_(sdkQueue), maxPacketSize_(maxPacketSize), onMessage_(onMessage) {
+SessionManager::SessionManager(std::queue<Message>& sdkQueue, EminentSdk& sdk, size_t maxPacketSize)
+    : sdkQueue_(sdkQueue), sdk_(sdk), maxPacketSize_(maxPacketSize) {
     worker_ = std::thread([this]() {
         while (!stopWorker_) {
             {
@@ -92,17 +93,27 @@ void SessionManager::processMessages() {
 }
 
 void SessionManager::receivePackage(const Package& pkg) {
+    std::cout << "[SessionManager] receivePackage: msgId=" << pkg.messageId
+              << ", fragId=" << pkg.fragmentId << "/" << pkg.fragmentsCount
+              << ", payload='" << pkg.payload << "'\n";
 
     receivedPackages_[pkg.messageId].push_back(pkg);
     auto& vec = receivedPackages_[pkg.messageId];
+    std::cout << "[SessionManager] fragments received for msgId=" << pkg.messageId << ": " << vec.size() << "/" << pkg.fragmentsCount << std::endl;
 
-    if ((int)vec.size() < pkg.fragmentsCount) return;
+    if ((int)vec.size() < pkg.fragmentsCount) {
+        std::cout << "[SessionManager] Not enough fragments yet, returning.\n";
+        return;
+    }
 
     std::sort(vec.begin(), vec.end(), [](const Package& a, const Package& b) { return a.fragmentId < b.fragmentId; });
     std::string fullPayload;
 
     for (int i = 0; i < pkg.fragmentsCount; ++i) {
-        if (vec[i].fragmentId != i) return;
+        if (vec[i].fragmentId != i) {
+            std::cout << "[SessionManager] Fragment index mismatch at i=" << i << ", got " << vec[i].fragmentId << ". Returning.\n";
+            return;
+        }
         fullPayload += vec[i].payload;
     }
 
@@ -115,9 +126,8 @@ void SessionManager::receivePackage(const Package& pkg) {
         pkg.requireAck,
         nullptr
     };
-    
-    if (onMessage_) onMessage_(msg);
-    
+    std::cout << "[SessionManager] All fragments received. Passing message up: '" << fullPayload << "'\n";
+    sdk_.onMessageReceived(msg);
     receivedPackages_.erase(pkg.messageId);
 }
 

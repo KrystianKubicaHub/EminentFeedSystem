@@ -6,8 +6,9 @@
 using namespace std;
 
 int main() {
-    EminentSdk sdkA;
-    EminentSdk sdkB;
+    EminentSdk sdkA(8001, "127.0.0.1", 8002);
+    EminentSdk sdkB(8002, "127.0.0.1", 8001);
+   
 
     DeviceId idA = 1001;
     DeviceId idB = 2002;

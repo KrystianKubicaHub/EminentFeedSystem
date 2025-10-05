@@ -66,6 +66,10 @@ TransportLayer::TransportLayer(std::queue<Package>& outgoingPackages, SessionMan
 
 void TransportLayer::receiveFrame(const Frame& frame) {
     Package pkg = deserialize(frame);
+    std::cout << "[TransportLayer] Received frame, deserialized package: id=" << pkg.packageId
+              << ", msgId=" << pkg.messageId
+              << ", frag=" << pkg.fragmentId << "/" << pkg.fragmentsCount
+              << ", payload='" << pkg.payload << "'\n";
     sessionManager_.receivePackage(pkg);
 }
 

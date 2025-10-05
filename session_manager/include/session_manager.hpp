@@ -17,21 +17,19 @@ using namespace std;
 
 
 
+class EminentSdk; // forward
+
 class SessionManager {
 public:
-    using OnMessageCallback = std::function<void(const Message&)>;
-
-    SessionManager(std::queue<Message>& sdkQueue, OnMessageCallback onMessage = nullptr, size_t maxPacketSize = 256);
+    SessionManager(std::queue<Message>& sdkQueue, EminentSdk& sdk, size_t maxPacketSize = 256);
 
     void processMessages();
 
-    void setOnMessageCallback(OnMessageCallback cb) { onMessage_ = cb; }
-
 private:
     std::queue<Message>& sdkQueue_;
+    EminentSdk& sdk_;
     size_t maxPacketSize_;
     PackageId nextPackageId_ = 1;
-    OnMessageCallback onMessage_ = nullptr;
     std::queue<Package> outgoingPackages_;
     std::unordered_map<MessageId, bool> messageStatus_; // true = SENT
     std::unordered_map<MessageId, std::vector<Package>> receivedPackages_;

@@ -7,23 +7,22 @@
 using namespace std;
 
 
-EminentSdk::EminentSdk()
-    : sessionManager_(
-        outgoingQueue_,
-        [this](const Message& msg) { this->handleReceivedMessage(msg); }
-        ),
-        transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_),
-        physicalLayer_(12345, "127.0.0.1", 12346)
+
+EminentSdk::EminentSdk(int localPort, const std::string& remoteHost, int remotePort)
+    : sessionManager_(outgoingQueue_, *this),
+      transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_),
+      codingModule_(transportLayer_.getOutgoingFrames(), transportLayer_),
+      physicalLayer_(localPort, remoteHost, remotePort, codingModule_.getOutgoingFrames(), codingModule_),
+      localPort_(localPort),
+      remoteHost_(remoteHost),
+      remotePort_(remotePort)
 {
 }
 
-void EminentSdk::handleReceivedMessage(const Message& msg) {
-    auto it = connections_.find(msg.connId);
-    if (it != connections_.end() && it->second.status == ConnectionStatus::ACTIVE) {
-        if (it->second.onMessage) {
-            it->second.onMessage(msg);
-        }
-    }
+
+void EminentSdk::onMessageReceived(const Message& msg) {
+    std::cout << "[EminentSdk] onMessageReceived: msgId=" << msg.id << ", connId=" << msg.connId << ", payload='" << msg.payload << "'\n";
+    // Tu można dodać dalszą logikę (np. wywołanie callbacka)
 }
 
 void EminentSdk::initialize(

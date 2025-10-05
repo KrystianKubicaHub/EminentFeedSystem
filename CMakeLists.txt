@@ -1,4 +1,17 @@
+include_directories(${CMAKE_SOURCE_DIR}/physical_layer/include)
+add_library(CodingModule
+    CodingModule/src/CodingModule.cpp
+)
+
+target_include_directories(CodingModule PUBLIC
+    CodingModule/include
+    transport_layer/include
+    common
+)
 include_directories(${CMAKE_SOURCE_DIR}/common)
+include_directories(${CMAKE_SOURCE_DIR}/sdk/include)
+include_directories(${CMAKE_SOURCE_DIR}/transport_layer/include)
+include_directories(${CMAKE_SOURCE_DIR}/CodingModule/include)
 
 cmake_minimum_required(VERSION 3.10)
 project(eminent_feed_system LANGUAGES CXX)
@@ -15,6 +28,7 @@ target_include_directories(eminent_sdk PUBLIC
     session_manager/include
     transport_layer/include
     physical_layer/include
+    CodingModule/include
     common
 )
 
@@ -57,6 +71,7 @@ target_link_libraries(eminent_demo
     session_manager
     transport_layer
     physical_layer
+    CodingModule
 )
 
 target_include_directories(eminent_demo PRIVATE

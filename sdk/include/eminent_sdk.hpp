@@ -3,12 +3,18 @@
 #include <common_types.hpp>
 #include "session_manager.hpp"
 #include "transport_layer.hpp"
+
 #include "physical_layer.hpp"
+#include "CodingModule.hpp"
 
 
 class EminentSdk {
 public:
-    EminentSdk();
+    EminentSdk(
+        int localPort,
+        const std::string& remoteHost,
+        int remotePort
+    );
 
     void initialize(
         DeviceId selfId,
@@ -58,5 +64,11 @@ private:
 
     SessionManager sessionManager_;
     TransportLayer transportLayer_;
+    CodingModule codingModule_;
     PhysicalLayerUdp physicalLayer_;
+    int localPort_;
+    std::string remoteHost_;
+    int remotePort_;
+    public:
+        void onMessageReceived(const Message& msg);
 };
