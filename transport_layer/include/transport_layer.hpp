@@ -16,7 +16,7 @@ class TransportLayer {
 public:
     TransportLayer(std::queue<Package>& outgoingPackages, SessionManager& sessionManager);
     std::queue<Frame>& getOutgoingFrames();
-    void receiveFrame(const Frame& frame); // nowa metoda
+    void receiveFrame(const Frame& frame); 
 
 private:
     Frame serialize(const Package& pkg);
