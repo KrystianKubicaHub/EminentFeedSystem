@@ -13,6 +13,8 @@ int main() {
     DeviceId idA = 1001;
     DeviceId idB = 2002;
     bool aInitialized = false, bInitialized = false;
+    ConnectionId finalConnA = -1;
+    ConnectionId finalConnB = -1;
 
 
     sdkA.initialize(
@@ -39,7 +41,8 @@ int main() {
             cout << (accept ? "sdkB: handshake accepted\n" : "sdkB: handshake rejected\n");
             return accept;
         },
-        [idB](ConnectionId connId, DeviceId remoteId) {
+        [idB, &finalConnB](ConnectionId connId, DeviceId remoteId) {
+            finalConnB = connId;
             cout << "Radośnie informuję, że SDK o id " << idB
                  << " połączył się z userem o id " << remoteId
                  << ", połączenie ma id " << connId << endl;
@@ -61,11 +64,29 @@ int main() {
         [&](const string& err) { cout << "Connect failed: " << err << endl; },
         [&](const string& trouble) { cout << "Trouble: " << trouble << endl; },
         [&]() { cout << "Disconnected!" << endl; },
-        [&](ConnectionId) {}, // onConnected
+        [&](ConnectionId cid) {
+            finalConnA = cid;
+            cout << "sdkA onConnected: final connection id " << cid << endl;
+        },
         onMessage
     );
 
-    this_thread::sleep_for(chrono::milliseconds(100));
+    this_thread::sleep_for(chrono::milliseconds(2000));
+
+    if (finalConnA != -1) {
+        sdkA.setDefaultPriority(finalConnA, 6);
+    } else {
+        cout << "Warning: sdkA final connection id not available, cannot set priority." << endl;
+    }
+
+    if (finalConnB != -1) {
+        sdkB.setDefaultPriority(finalConnB, 4);
+    } else {
+        cout << "Warning: sdkB final connection id not available, cannot set priority." << endl;
+    }
+
+    sdkA.complexConsoleInfo("SDK A");
+    sdkB.complexConsoleInfo("SDK B");
 
     cout << "Test finished." << endl;
     return 0;

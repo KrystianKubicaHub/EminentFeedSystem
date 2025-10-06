@@ -6,6 +6,7 @@
 #include <random>
 #include <sstream>
 #include <cctype>
+#include <algorithm>
 
 using namespace std;
 
@@ -49,7 +50,9 @@ void EminentSdk::onMessageReceived(const Message& msg) {
                 std::cout << "[EminentSdk] Handshake payload missing required fields." << std::endl;
                 return;
             }
-            if (payload->hasNewId) {
+            if (payload->hasFinalConfirmation && payload->finalConfirmation) {
+                handleHandshakeFinalConfirmation(msg, *payload);
+            } else if (payload->hasNewId) {
                 handleHandshakeResponse(msg, *payload);
             } else {
                 handleHandshakeRequest(msg, *payload);
@@ -68,6 +71,66 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
 
 void EminentSdk::handleVideoMessage(const Message& msg) {
     std::cout << "[EminentSdk] VIDEO messages are not supported yet. Payload size: " << msg.payload.size() << std::endl;
+}
+
+std::string EminentSdk::statusToString(ConnectionStatus status) const {
+    switch (status) {
+        case ConnectionStatus::PENDING:
+            return "PENDING";
+        case ConnectionStatus::ACCEPTED:
+            return "ACCEPTED";
+        case ConnectionStatus::ACTIVE:
+            return "ACTIVE";
+        case ConnectionStatus::FAILED:
+            return "FAILED";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+void EminentSdk::complexConsoleInfo(const std::string& title) {
+    std::cout << "\n\n";
+    if (!title.empty()) {
+        std::cout << "========== " << title << " ==========" << std::endl;
+    } else {
+        std::cout << "========== SDK SUMMARY ==========" << std::endl;
+    }
+
+    size_t activeCount = std::count_if(
+        connections_.begin(),
+        connections_.end(),
+        [](const auto& entry) {
+            return entry.second.status == ConnectionStatus::ACTIVE;
+        }
+    );
+
+    std::cout << "Device ID: " << deviceId_ << std::endl;
+    std::cout << "Local port: " << localPort_ << std::endl;
+    std::cout << "Remote endpoint: " << remoteHost_ << ':' << remotePort_ << std::endl;
+    std::cout << "Total connections: " << connections_.size() << std::endl;
+    std::cout << "Active connections: " << activeCount << std::endl;
+
+    if (connections_.empty()) {
+        std::cout << "(no connections)" << std::endl;
+    } else {
+        std::cout << "--- Connections ---" << std::endl;
+        for (const auto& [cid, conn] : connections_) {
+            std::cout << "Connection ID: " << conn.id << std::endl;
+            std::cout << "  key: " << cid << std::endl;
+            std::cout << "  remoteId: " << conn.remoteId << std::endl;
+            std::cout << "  defaultPriority: " << conn.defaultPriority << std::endl;
+            std::cout << "  status: " << statusToString(conn.status) << std::endl;
+            std::cout << "  specialCode: " << conn.specialCode << std::endl;
+            std::cout << "  callbacks: onMessage=" << (conn.onMessage ? "yes" : "no")
+                      << ", onTrouble=" << (conn.onTrouble ? "yes" : "no")
+                      << ", onDisconnected=" << (conn.onDisconnected ? "yes" : "no")
+                      << ", onConnected=" << (conn.onConnected ? "yes" : "no")
+                      << std::endl;
+        }
+    }
+
+    std::cout << "========== END SUMMARY ==========" << std::endl;
+    std::cout << "\n\n";
 }
 
 void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePayload& payload) {
@@ -93,9 +156,7 @@ void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePaylo
     conn.specialCode = payload.specialCode;
     connections_[combinedId] = conn;
 
-    if (onConnectionEstablished_) {
-        onConnectionEstablished_(conn.id, conn.remoteId);
-    }
+    std::cout << "[EminentSdk] Connection " << combinedId << " status set to ACCEPTED." << std::endl;
 
     MessageId mid = nextMsgId_++;
     std::ostringstream oss;
@@ -123,6 +184,38 @@ void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayl
     connections_[combinedId] = conn;
 
     std::cout << "[EminentSdk] Connection " << combinedId << " is now ACTIVE." << std::endl;
+
+    if (conn.onConnected) {
+        conn.onConnected(conn.id);
+    }
+
+    MessageId ackId = nextMsgId_++;
+    std::ostringstream oss;
+    oss << "{\"deviceId\": " << deviceId_ << ", \"specialCode\": " << conn.specialCode << ", \"finalConfirmation\": true}";
+    std::string ackPayload = oss.str();
+    Message finalAck{ackId, combinedId, ackPayload, MessageFormat::HANDSHAKE, 0, false, nullptr};
+    outgoingQueue_.push(finalAck);
+}
+
+void EminentSdk::handleHandshakeFinalConfirmation(const Message& msg, const HandshakePayload& payload) {
+    auto it = connections_.find(msg.connId);
+    if (it == connections_.end()) {
+        std::cout << "[EminentSdk] Received final confirmation for unknown connectionId=" << msg.connId << std::endl;
+        return;
+    }
+
+    Connection& conn = it->second;
+    conn.remoteId = payload.deviceId;
+    conn.specialCode = payload.specialCode;
+    bool wasActive = (conn.status == ConnectionStatus::ACTIVE);
+    conn.status = ConnectionStatus::ACTIVE;
+
+    if (!wasActive) {
+        std::cout << "[EminentSdk] Connection " << conn.id << " marked ACTIVE after final confirmation." << std::endl;
+        if (onConnectionEstablished_) {
+            onConnectionEstablished_(conn.id, conn.remoteId);
+        }
+    }
 
     if (conn.onConnected) {
         conn.onConnected(conn.id);
@@ -161,6 +254,29 @@ std::optional<EminentSdk::HandshakePayload> EminentSdk::parseHandshakePayload(co
         }
     };
 
+    auto parseBoolField = [&](const std::string& key) -> std::optional<bool> {
+        const std::string token = "\"" + key + "\"";
+        size_t keyPos = payload.find(token);
+        if (keyPos == std::string::npos) {
+            return std::nullopt;
+        }
+        size_t colon = payload.find(":", keyPos + token.size());
+        if (colon == std::string::npos) {
+            return std::nullopt;
+        }
+        size_t valueStart = colon + 1;
+        while (valueStart < payload.size() && std::isspace(static_cast<unsigned char>(payload[valueStart]))) {
+            ++valueStart;
+        }
+        if (payload.compare(valueStart, 4, "true") == 0) {
+            return true;
+        }
+        if (payload.compare(valueStart, 5, "false") == 0) {
+            return false;
+        }
+        return std::nullopt;
+    };
+
     if (auto val = parseIntField("deviceId")) {
         result.hasDeviceId = true;
         result.deviceId = *val;
@@ -172,6 +288,10 @@ std::optional<EminentSdk::HandshakePayload> EminentSdk::parseHandshakePayload(co
     if (auto val = parseIntField("newId")) {
         result.hasNewId = true;
         result.newId = *val;
+    }
+    if (auto val = parseBoolField("finalConfirmation")) {
+        result.hasFinalConfirmation = true;
+        result.finalConfirmation = *val;
     }
 
     if (!result.hasDeviceId && !result.hasSpecialCode && !result.hasNewId) {
@@ -299,6 +419,28 @@ void EminentSdk::send(
     outgoingQueue_.push(msg);
 
     cout << "Message queued with ID " << mid << " on connection " << id << endl;
+}
+
+void EminentSdk::setDefaultPriority(ConnectionId id, Priority priority) {
+    auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        auto match = std::find_if(
+            connections_.begin(),
+            connections_.end(),
+            [id](const auto& entry) {
+                return entry.second.id == id;
+            }
+        );
+        if (match == connections_.end()) {
+            std::cout << "[EminentSdk] setDefaultPriority: connection " << id << " not found." << std::endl;
+            return;
+        }
+        it = match;
+    }
+
+    it->second.defaultPriority = priority;
+    std::cout << "[EminentSdk] Connection " << it->second.id
+              << " default priority set to " << priority << std::endl;
 }
 
 void EminentSdk::getStats(

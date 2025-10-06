@@ -48,7 +48,9 @@ public:
     );
 
     void handleReceivedMessage(const Message& msg);
-        void onMessageReceived(const Message& msg);
+    void onMessageReceived(const Message& msg);
+    void complexConsoleInfo(const std::string& title = "");
+    void setDefaultPriority(ConnectionId id, Priority priority);
 
     void getStats(
         function<void(const vector<ConnectionStats>&)> onStats,
@@ -74,18 +76,22 @@ private:
     int localPort_;
     std::string remoteHost_;
     int remotePort_;
-        struct HandshakePayload {
-            bool hasDeviceId = false;
-            int deviceId = 0;
-            bool hasSpecialCode = false;
-            int specialCode = 0;
-            bool hasNewId = false;
-            int newId = 0;
-        };
+    struct HandshakePayload {
+        bool hasDeviceId = false;
+        int deviceId = 0;
+        bool hasSpecialCode = false;
+        int specialCode = 0;
+        bool hasNewId = false;
+        int newId = 0;
+        bool hasFinalConfirmation = false;
+        bool finalConfirmation = false;
+    };
 
-        std::optional<HandshakePayload> parseHandshakePayload(const std::string& payload);
-        void handleHandshakeRequest(const Message& msg, const HandshakePayload& payload);
-        void handleHandshakeResponse(const Message& msg, const HandshakePayload& payload);
-        void handleJsonMessage(const Message& msg);
-        void handleVideoMessage(const Message& msg);
+    std::optional<HandshakePayload> parseHandshakePayload(const std::string& payload);
+    void handleHandshakeRequest(const Message& msg, const HandshakePayload& payload);
+    void handleHandshakeResponse(const Message& msg, const HandshakePayload& payload);
+    void handleHandshakeFinalConfirmation(const Message& msg, const HandshakePayload& payload);
+    void handleJsonMessage(const Message& msg);
+    void handleVideoMessage(const Message& msg);
+    std::string statusToString(ConnectionStatus status) const;
 };
