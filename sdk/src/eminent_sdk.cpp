@@ -21,15 +21,45 @@ EminentSdk::EminentSdk(int localPort, const std::string& remoteHost, int remoteP
 
 
 void EminentSdk::onMessageReceived(const Message& msg) {
-    std::cout << "[EminentSdk] onMessageReceived: msgId=" << msg.id << ", connId=" << msg.connId << ", payload='" << msg.payload << "'\n";
-    // Tu można dodać dalszą logikę (np. wywołanie callbacka)
+    std::cout << "[EminentSdk] onMessageReceived: ";
+    std::cout << "{ id=" << msg.id
+              << ", connId=" << msg.connId
+              << ", payload='" << msg.payload << "'"
+              << ", format=" << static_cast<int>(msg.format)
+              << ", priority=" << msg.priority
+              << ", requireAck=" << msg.requireAck
+              << " }" << std::endl;
+    if (msg.format != MessageFormat::HANDSHAKE) {
+        std::cout << "[EminentSdk] Message type is not HANDSHAKE. Ignoring." << std::endl;
+            std::cout << "Message format: " << static_cast<int>(msg.format) << std::endl;
+        return;
+    }
+    bool accepted = false;
+    if (onIncomingConnectionDecision_) {
+        accepted = onIncomingConnectionDecision_(msg.connId, msg.payload);
+    }
+    if (accepted) {
+        std::cout << "[EminentSdk] Handshake from connId=" << msg.connId << " accepted. Adding connection to active list." << std::endl;
+        Connection conn;
+        conn.id = msg.connId;
+        conn.remoteId = msg.connId;
+        conn.defaultPriority = 0;
+        conn.status = ConnectionStatus::ACTIVE;
+        connections_[msg.connId] = conn;
+        if (onConnectionEstablished_) {
+            onConnectionEstablished_(conn.id, conn.remoteId);
+        }
+    } else {
+        std::cout << "[EminentSdk] Handshake from connId=" << msg.connId << " rejected by user decision." << std::endl;
+    }
 }
 
 void EminentSdk::initialize(
     DeviceId selfId,
     function<void()> onSuccess,
     function<void(const string&)> onFailure,
-    function<void(DeviceId)> onIncomingConnection
+    function<bool(DeviceId, const std::string& payload)> onIncomingConnectionDecision,
+    function<void(ConnectionId, DeviceId)> onConnectionEstablished 
 ) {
     if (initialized_) {
         if (onFailure) {
@@ -38,7 +68,10 @@ void EminentSdk::initialize(
         return;
     }
     deviceId_ = selfId;
-    onIncomingConnection_ = onIncomingConnection;
+
+    onIncomingConnectionDecision_ = onIncomingConnectionDecision;
+    onConnectionEstablished_ = onConnectionEstablished; 
+   
     initialized_ = true;
     cout << "SDK initialized for device: " << selfId << endl;
     if (onSuccess) {

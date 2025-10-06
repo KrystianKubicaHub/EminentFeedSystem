@@ -7,29 +7,29 @@
 
 Frame TransportLayer::serialize(const Package& pkg) {
     Frame frame;
-    appendBits(frame.data, pkg.packageId, 32);
-    appendBits(frame.data, pkg.messageId, 32);
-    appendBits(frame.data, pkg.connId, 32);
-    appendBits(frame.data, pkg.fragmentId, 16);
-    appendBits(frame.data, pkg.fragmentsCount, 16);
-    appendBits(frame.data, static_cast<uint64_t>(pkg.format), 8);
-    appendBits(frame.data, pkg.priority, 8);
-    appendBits(frame.data, pkg.requireAck ? 1 : 0, 1);
-    appendBits(frame.data, pkg.payload.size(), 16);
+    appendBytes(frame.data, pkg.packageId, 4); // uint32_t
+    appendBytes(frame.data, pkg.messageId, 4); // uint32_t
+    appendBytes(frame.data, pkg.connId, 4); // uint32_t
+    appendBytes(frame.data, pkg.fragmentId, 2); // uint16_t
+    appendBytes(frame.data, pkg.fragmentsCount, 2); // uint16_t
+    appendBytes(frame.data, static_cast<uint8_t>(pkg.format), 1); // uint8_t
+    appendBytes(frame.data, static_cast<uint8_t>(pkg.priority), 1); // uint8_t
+    appendBytes(frame.data, static_cast<uint8_t>(pkg.requireAck ? 1 : 0), 1); // uint8_t
+    appendBytes(frame.data, static_cast<uint16_t>(pkg.payload.size()), 2); // uint16_t
     for (char c : pkg.payload) frame.data.push_back(static_cast<uint8_t>(c));
     return frame;
 }
 
-void TransportLayer::appendBits(std::vector<uint8_t>& bits, uint64_t value, int bitCount) {
-    for (int i = bitCount - 1; i >= 0; --i) {
-        bits.push_back((value >> i) & 0xFF);
+void TransportLayer::appendBytes(std::vector<uint8_t>& bytes, uint64_t value, int byteCount) {
+    for (int i = byteCount - 1; i >= 0; --i) {
+        bytes.push_back((value >> (i * 8)) & 0xFF);
     }
 }
 
-uint64_t TransportLayer::readBits(const std::vector<uint8_t>& bits, size_t& offset, int bitCount) {
+uint64_t TransportLayer::readBytes(const std::vector<uint8_t>& bytes, size_t& offset, int byteCount) {
     uint64_t value = 0;
-    for (int i = 0; i < bitCount; i++) {
-        value = (value << 8) | bits[offset++];
+    for (int i = 0; i < byteCount; i++) {
+        value = (value << 8) | bytes[offset++];
     }
     return value;
 }
@@ -78,15 +78,15 @@ Package TransportLayer::deserialize(const Frame& frame) {
     size_t offset = 0;
     auto& data = frame.data;
     Package pkg;
-    pkg.packageId = readBits(data, offset, 32);
-    pkg.messageId = readBits(data, offset, 32);
-    pkg.connId = readBits(data, offset, 32);
-    pkg.fragmentId = readBits(data, offset, 16);
-    pkg.fragmentsCount = readBits(data, offset, 16);
-    pkg.format = static_cast<MessageFormat>(readBits(data, offset, 8));
-    pkg.priority = readBits(data, offset, 8);
-    pkg.requireAck = readBits(data, offset, 1) != 0;
-    size_t payloadSize = readBits(data, offset, 16);
+    pkg.packageId = readBytes(data, offset, 4);
+    pkg.messageId = readBytes(data, offset, 4);
+    pkg.connId = readBytes(data, offset, 4);
+    pkg.fragmentId = readBytes(data, offset, 2);
+    pkg.fragmentsCount = readBytes(data, offset, 2);
+    pkg.format = static_cast<MessageFormat>(readBytes(data, offset, 1));
+    pkg.priority = readBytes(data, offset, 1);
+    pkg.requireAck = readBytes(data, offset, 1) != 0;
+    size_t payloadSize = readBytes(data, offset, 2);
     pkg.payload.clear();
     for (size_t i = 0; i < payloadSize && offset < data.size(); ++i) {
         pkg.payload.push_back(static_cast<char>(data[offset++]));

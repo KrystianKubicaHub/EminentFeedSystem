@@ -14,18 +14,36 @@ int main() {
     DeviceId idB = 2002;
     bool aInitialized = false, bInitialized = false;
 
+
     sdkA.initialize(
         idA,
         [&]() { cout << "sdkA initialized!\n"; aInitialized = true; },
         [&](const string& err) { cout << "sdkA init failed: " << err << endl; },
-        [&](DeviceId remoteId) { cout << "sdkA: incoming connection from " << remoteId << endl; }
+        [](DeviceId remoteId, const std::string& payload) {
+            cout << "sdkA: handshake from " << remoteId << ", payload='" << payload << "'\n";
+            // Akceptujemy tylko jeśli payload zawiera "ipockowanfwa"
+            bool accept = payload == "ipockowanfwa";
+            cout << (accept ? "sdkA: handshake accepted\n" : "sdkA: handshake rejected\n");
+            return accept;
+        }
     );
 
     sdkB.initialize(
         idB,
         [&]() { cout << "sdkB initialized!\n"; bInitialized = true; },
         [&](const string& err) { cout << "sdkB init failed: " << err << endl; },
-        [&](DeviceId remoteId) { cout << "sdkB: incoming connection from " << remoteId << endl; }
+        [](DeviceId remoteId, const std::string& payload) {
+            cout << "sdkB: handshake from " << remoteId << ", payload='" << payload << "'\n";
+            // Akceptujemy tylko jeśli payload zawiera "ipockowanfwa"
+            bool accept = payload == "ipockowanfwa";
+            cout << (accept ? "sdkB: handshake accepted\n" : "sdkB: handshake rejected\n");
+            return accept;
+        },
+        [idB](ConnectionId connId, DeviceId remoteId) {
+            cout << "Radośnie informuję, że SDK o id " << idB
+                 << " połączył się z userem o id " << remoteId
+                 << ", połączenie ma id " << connId << endl;
+        }
     );
 
     while (!aInitialized || !bInitialized) {

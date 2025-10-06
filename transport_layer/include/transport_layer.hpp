@@ -21,8 +21,8 @@ public:
 private:
     Frame serialize(const Package& pkg);
     Package deserialize(const Frame& frame);
-    void appendBits(std::vector<uint8_t>& bits, uint64_t value, int bitCount);
-    uint64_t readBits(const std::vector<uint8_t>& bits, size_t& offset, int bitCount);
+    void appendBytes(std::vector<uint8_t>& bytes, uint64_t value, int byteCount);
+    uint64_t readBytes(const std::vector<uint8_t>& bytes, size_t& offset, int byteCount);
     uint32_t crc32(const std::vector<uint8_t>& dataBytes);
 
     std::queue<Package>& outgoingPackages_;

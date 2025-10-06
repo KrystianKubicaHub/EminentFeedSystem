@@ -20,7 +20,8 @@ public:
         DeviceId selfId,
         function<void()> onSuccess,
         function<void(const string&)> onFailure,
-        function<void(DeviceId)> onIncomingConnection
+        function<bool(DeviceId, const std::string& payload)> onIncomingConnectionDecision,
+        function<void(ConnectionId, DeviceId)> onConnectionEstablished = nullptr
     );
 
     void connect(
@@ -58,7 +59,8 @@ private:
     int nextMsgId_ = 1;
 
     bool initialized_ = false;
-    function<void(DeviceId remoteId)> onIncomingConnection_;
+    std::function<bool(DeviceId, const std::string& payload)> onIncomingConnectionDecision_;
+    std::function<void(ConnectionId, DeviceId)> onConnectionEstablished_;
     unordered_map<int, Connection> connections_;
     queue<Message> outgoingQueue_;
 
