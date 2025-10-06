@@ -81,9 +81,10 @@ struct Message {
 };
 
 enum class ConnectionStatus {
-    PENDING,
-    ACTIVE,
-    FAILED
+    PENDING, // wysłana prośba o połączenie
+    ACCEPTED, // zaakceptowaliśmy, możemy odbierać wiadomości, ale nie mamy potwierdzenia od drugiej strony
+    ACTIVE, // aktywne
+    FAILED // klęska
 };
 
 struct Connection {
@@ -95,5 +96,6 @@ struct Connection {
     function<void()> onDisconnected;
     function<void(ConnectionId)> onConnected;
     ConnectionStatus status = ConnectionStatus::PENDING;
+    int specialCode = 0;
 };
 

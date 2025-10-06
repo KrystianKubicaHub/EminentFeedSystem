@@ -1,6 +1,7 @@
 #pragma once
 
 #include <common_types.hpp>
+#include <optional>
 #include "session_manager.hpp"
 #include "transport_layer.hpp"
 
@@ -47,6 +48,7 @@ public:
     );
 
     void handleReceivedMessage(const Message& msg);
+        void onMessageReceived(const Message& msg);
 
     void getStats(
         function<void(const vector<ConnectionStats>&)> onStats,
@@ -55,7 +57,8 @@ public:
 
 private:
     DeviceId deviceId_;
-    int nextConnectionId_ = 1;
+    int nextConnectionId_ = 2;
+    int nextPrime();
     int nextMsgId_ = 1;
 
     bool initialized_ = false;
@@ -71,6 +74,18 @@ private:
     int localPort_;
     std::string remoteHost_;
     int remotePort_;
-    public:
-        void onMessageReceived(const Message& msg);
+        struct HandshakePayload {
+            bool hasDeviceId = false;
+            int deviceId = 0;
+            bool hasSpecialCode = false;
+            int specialCode = 0;
+            bool hasNewId = false;
+            int newId = 0;
+        };
+
+        std::optional<HandshakePayload> parseHandshakePayload(const std::string& payload);
+        void handleHandshakeRequest(const Message& msg, const HandshakePayload& payload);
+        void handleHandshakeResponse(const Message& msg, const HandshakePayload& payload);
+        void handleJsonMessage(const Message& msg);
+        void handleVideoMessage(const Message& msg);
 };

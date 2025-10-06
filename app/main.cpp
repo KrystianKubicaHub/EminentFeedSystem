@@ -22,7 +22,7 @@ int main() {
         [](DeviceId remoteId, const std::string& payload) {
             cout << "sdkA: handshake from " << remoteId << ", payload='" << payload << "'\n";
             // Akceptujemy tylko jeśli payload zawiera "ipockowanfwa"
-            bool accept = payload == "ipockowanfwa";
+            bool accept = payload != "ipockowanfwa";
             cout << (accept ? "sdkA: handshake accepted\n" : "sdkA: handshake rejected\n");
             return accept;
         }
@@ -35,7 +35,7 @@ int main() {
         [](DeviceId remoteId, const std::string& payload) {
             cout << "sdkB: handshake from " << remoteId << ", payload='" << payload << "'\n";
             // Akceptujemy tylko jeśli payload zawiera "ipockowanfwa"
-            bool accept = payload == "ipockowanfwa";
+            bool accept = payload != "ipockowanfwa";
             cout << (accept ? "sdkB: handshake accepted\n" : "sdkB: handshake rejected\n");
             return accept;
         },
