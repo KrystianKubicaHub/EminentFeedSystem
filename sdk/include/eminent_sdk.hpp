@@ -51,6 +51,7 @@ public:
     void onMessageReceived(const Message& msg);
     void complexConsoleInfo(const std::string& title = "");
     void setDefaultPriority(ConnectionId id, Priority priority);
+    void setOnMessageHandler(ConnectionId id, std::function<void(const Message&)> handler);
 
     void getStats(
         function<void(const vector<ConnectionStats>&)> onStats,

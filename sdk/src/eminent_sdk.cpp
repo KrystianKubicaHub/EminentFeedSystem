@@ -66,7 +66,90 @@ void EminentSdk::onMessageReceived(const Message& msg) {
 }
 
 void EminentSdk::handleJsonMessage(const Message& msg) {
-    std::cout << "[EminentSdk] JSON messages are not supported yet. Payload: " << msg.payload << std::endl;
+    auto it = connections_.find(msg.connId);
+    if (it == connections_.end()) {
+        auto match = std::find_if(
+            connections_.begin(),
+            connections_.end(),
+            [&](const auto& entry) {
+                return entry.second.id == msg.connId;
+            }
+        );
+        if (match == connections_.end()) {
+            std::cout << "[EminentSdk] JSON message received for unknown connectionId=" << msg.connId << std::endl;
+            return;
+        }
+        it = match;
+    }
+
+    const Connection& conn = it->second;
+
+    auto extractStringField = [](const std::string& json, const std::string& key) -> std::optional<std::string> {
+        const std::string token = "\"" + key + "\"";
+        size_t keyPos = json.find(token);
+        if (keyPos == std::string::npos) {
+            return std::nullopt;
+        }
+        size_t colon = json.find(":", keyPos + token.size());
+        if (colon == std::string::npos) {
+            return std::nullopt;
+        }
+        size_t valueStart = colon + 1;
+        while (valueStart < json.size() && std::isspace(static_cast<unsigned char>(json[valueStart]))) {
+            ++valueStart;
+        }
+        if (valueStart >= json.size()) {
+            return std::nullopt;
+        }
+        if (json[valueStart] == '"') {
+            ++valueStart;
+            std::string result;
+            bool escape = false;
+            for (size_t i = valueStart; i < json.size(); ++i) {
+                char c = json[i];
+                if (escape) {
+                    result.push_back(c);
+                    escape = false;
+                } else if (c == '\\') {
+                    escape = true;
+                } else if (c == '"') {
+                    return result;
+                } else {
+                    result.push_back(c);
+                }
+            }
+            return std::nullopt;
+        }
+
+        size_t valueEnd = valueStart;
+        while (valueEnd < json.size() && json[valueEnd] != ',' && json[valueEnd] != '}' && !std::isspace(static_cast<unsigned char>(json[valueEnd]))) {
+            ++valueEnd;
+        }
+        if (valueEnd <= valueStart) {
+            return std::nullopt;
+        }
+        return json.substr(valueStart, valueEnd - valueStart);
+    };
+
+    auto text = extractStringField(msg.payload, "text");
+    auto from = extractStringField(msg.payload, "from");
+
+    std::cout << "[EminentSdk] JSON message on connection " << conn.id
+              << " (remoteId=" << conn.remoteId << ")" << std::endl;
+    if (from.has_value()) {
+        std::cout << "  from: " << *from << std::endl;
+    }
+    if (text.has_value()) {
+        std::cout << "  text: " << *text << std::endl;
+    } else {
+        std::cout << "  payload: " << msg.payload << std::endl;
+    }
+
+    if (conn.onMessage) {
+        conn.onMessage(msg);
+    } else {
+        std::cout << "[EminentSdk] No onMessage callback registered for connection " << conn.id << std::endl;
+    }
 }
 
 void EminentSdk::handleVideoMessage(const Message& msg) {
@@ -441,6 +524,28 @@ void EminentSdk::setDefaultPriority(ConnectionId id, Priority priority) {
     it->second.defaultPriority = priority;
     std::cout << "[EminentSdk] Connection " << it->second.id
               << " default priority set to " << priority << std::endl;
+}
+
+void EminentSdk::setOnMessageHandler(ConnectionId id, std::function<void(const Message&)> handler) {
+    auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        auto match = std::find_if(
+            connections_.begin(),
+            connections_.end(),
+            [id](const auto& entry) {
+                return entry.second.id == id;
+            }
+        );
+        if (match == connections_.end()) {
+            std::cout << "[EminentSdk] setOnMessageHandler: connection " << id << " not found." << std::endl;
+            return;
+        }
+        it = match;
+    }
+
+    it->second.onMessage = std::move(handler);
+    std::cout << "[EminentSdk] Connection " << it->second.id
+              << " onMessage handler updated." << std::endl;
 }
 
 void EminentSdk::getStats(

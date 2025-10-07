@@ -2,6 +2,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <stdexcept>
 
 using namespace std;
 
@@ -41,8 +42,12 @@ int main() {
             cout << (accept ? "sdkB: handshake accepted\n" : "sdkB: handshake rejected\n");
             return accept;
         },
-        [idB, &finalConnB](ConnectionId connId, DeviceId remoteId) {
+        [idB, &finalConnB, &sdkB](ConnectionId connId, DeviceId remoteId) {
             finalConnB = connId;
+            sdkB.setOnMessageHandler(connId, [remoteId](const Message& msg) {
+                cout << "sdkB handler: message from " << remoteId
+                     << " on conn " << msg.connId << ": " << msg.payload << endl;
+            });
             cout << "Radośnie informuję, że SDK o id " << idB
                  << " połączył się z userem o id " << remoteId
                  << ", połączenie ma id " << connId << endl;
@@ -66,6 +71,9 @@ int main() {
         [&]() { cout << "Disconnected!" << endl; },
         [&](ConnectionId cid) {
             finalConnA = cid;
+            sdkA.setOnMessageHandler(cid, [cid](const Message& msg) {
+                cout << "sdkA handler: message on conn " << cid << ": " << msg.payload << endl;
+            });
             cout << "sdkA onConnected: final connection id " << cid << endl;
         },
         onMessage
@@ -87,6 +95,46 @@ int main() {
 
     sdkA.complexConsoleInfo("SDK A");
     sdkB.complexConsoleInfo("SDK B");
+
+    /// teraz tutaj chcieli byśmy dodać wysłanie wiadomości z A do B
+    /// oraz z B do A
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    if (finalConnA != -1) {
+        try {
+            sdkA.send(
+                finalConnA,
+                "{\"text\": \"Pozdrowienia od A dla B\", \"from\": 1001}",
+                MessageFormat::JSON,
+                6,
+                false,
+                []() { std::cout << "sdkA: message delivered callback" << std::endl; }
+            );
+        } catch (const std::exception& ex) {
+            std::cout << "sdkA: send failed - " << ex.what() << std::endl;
+        }
+    } else {
+        std::cout << "Warning: sdkA cannot send message, connection id missing." << std::endl;
+    }
+
+    if (finalConnB != -1) {
+        try {
+            sdkB.send(
+                finalConnB,
+                "{\"text\": \"Pozdrowienia od B dla A\", \"from\": 2002}",
+                MessageFormat::JSON,
+                4,
+                false,
+                []() { std::cout << "sdkB: message delivered callback" << std::endl; }
+            );
+        } catch (const std::exception& ex) {
+            std::cout << "sdkB: send failed - " << ex.what() << std::endl;
+        }
+    } else {
+        std::cout << "Warning: sdkB cannot send message, connection id missing." << std::endl;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     cout << "Test finished." << endl;
     return 0;
