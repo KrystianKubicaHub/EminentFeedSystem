@@ -5,20 +5,21 @@
 #include <cctype>
 #include <chrono>
 #include <functional>
-#include <iostream>
+#include <utility>
 #include <mutex>
 #include <thread>
 
-using namespace std::chrono;
+using namespace std;
+using namespace chrono;
 
-SessionManager::SessionManager(std::queue<Message>& sdkQueue, EminentSdk& sdk, size_t maxPacketSize)
-    : sdkQueue_(sdkQueue), sdk_(sdk), maxPacketSize_(maxPacketSize) {
-    worker_ = std::thread([this]() { workerLoop(); });
+SessionManager::SessionManager(queue<Message>& sdkQueue, EminentSdk& sdk, size_t maxPacketSize)
+    : LoggerBase("SessionManager"), sdkQueue_(sdkQueue), sdk_(sdk), maxPacketSize_(maxPacketSize) {
+    worker_ = thread([this]() { workerLoop(); });
 }
 
 SessionManager::~SessionManager() {
     {
-        std::lock_guard<std::mutex> lock(queueMutex_);
+        lock_guard<mutex> lock(queueMutex_);
         stopWorker_ = true;
     }
     if (worker_.joinable()) {
@@ -27,28 +28,43 @@ SessionManager::~SessionManager() {
 }
 
 void SessionManager::workerLoop() {
+    vector<function<void()>> callbacks;
     while (true) {
-        auto now = std::chrono::steady_clock::now();
+        callbacks.clear();
+        auto now = steady_clock::now();
         {
-            std::lock_guard<std::mutex> lock(queueMutex_);
+            lock_guard<mutex> lock(queueMutex_);
             if (stopWorker_) {
                 break;
             }
-            processSdkQueueLocked(now);
+            processSdkQueueLocked(now, callbacks);
             retransmitPendingLocked(now);
         }
-        std::this_thread::sleep_for(workerSleepInterval_);
+        for (auto& cb : callbacks) {
+            if (cb) {
+                cb();
+            }
+        }
+        this_thread::sleep_for(workerSleepInterval_);
     }
 }
 
 void SessionManager::processMessages() {
-    auto now = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lock(queueMutex_);
-    processSdkQueueLocked(now);
-    retransmitPendingLocked(now);
+    auto now = steady_clock::now();
+    vector<function<void()>> callbacks;
+    {
+        lock_guard<mutex> lock(queueMutex_);
+        processSdkQueueLocked(now, callbacks);
+        retransmitPendingLocked(now);
+    }
+    for (auto& cb : callbacks) {
+        if (cb) {
+            cb();
+        }
+    }
 }
 
-void SessionManager::processSdkQueueLocked(const std::chrono::steady_clock::time_point& now) {
+void SessionManager::processSdkQueueLocked(const steady_clock::time_point& now, vector<function<void()>>& callbacks) {
     while (!sdkQueue_.empty()) {
         Message msg = sdkQueue_.front();
         sdkQueue_.pop();
@@ -58,11 +74,14 @@ void SessionManager::processSdkQueueLocked(const std::chrono::steady_clock::time
             total = 1;
         }
 
+        bool trackForAck = msg.requireAck;
         PendingMessageInfo pending;
-        pending.message = msg;
+        if (trackForAck) {
+            pending.message = msg;
+        }
 
         for (int frag = 0; frag < total; ++frag) {
-            std::string fragment = msg.payload.substr(static_cast<size_t>(frag) * maxPacketSize_, maxPacketSize_);
+            string fragment = msg.payload.substr(static_cast<size_t>(frag) * maxPacketSize_, maxPacketSize_);
             Package pkg{
                 nextPackageId_++,
                 msg.id,
@@ -80,15 +99,21 @@ void SessionManager::processSdkQueueLocked(const std::chrono::steady_clock::time
             info.pkg = pkg;
             sendPackageLocked(info, now);
 
-            pending.packages.emplace(pkg.packageId, info);
-            packageToMessage_[pkg.packageId] = msg.id;
+            if (trackForAck) {
+                pending.packages.emplace(pkg.packageId, info);
+                packageToMessage_[pkg.packageId] = msg.id;
+            }
         }
 
-        pendingMessages_[msg.id] = std::move(pending);
+        if (trackForAck) {
+            pendingMessages_[msg.id] = move(pending);
+        } else if (msg.onDelivered) {
+            callbacks.push_back(msg.onDelivered);
+        }
     }
 }
 
-void SessionManager::retransmitPendingLocked(const std::chrono::steady_clock::time_point& now) {
+void SessionManager::retransmitPendingLocked(const steady_clock::time_point& now) {
     for (auto msgIt = pendingMessages_.begin(); msgIt != pendingMessages_.end();) {
         auto& pending = msgIt->second;
 
@@ -97,8 +122,8 @@ void SessionManager::retransmitPendingLocked(const std::chrono::steady_clock::ti
 
             if (now - info.lastSent >= retransmitInterval_) {
                 if (info.attempts >= maxRetransmitAttempts_) {
-                    std::cout << "[SessionManager] Dropping package " << info.pkg.packageId
-                              << " after reaching max retransmits" << std::endl;
+                    log(LogLevel::WARN, string("Dropping package ") + to_string(info.pkg.packageId) +
+                            " after reaching max retransmits");
                     packageToMessage_.erase(info.pkg.packageId);
                     pkgIt = pending.packages.erase(pkgIt);
                     continue;
@@ -116,26 +141,26 @@ void SessionManager::retransmitPendingLocked(const std::chrono::steady_clock::ti
     }
 }
 
-void SessionManager::sendPackageLocked(PendingPackageInfo& info, const std::chrono::steady_clock::time_point& now) {
+void SessionManager::sendPackageLocked(PendingPackageInfo& info, const steady_clock::time_point& now) {
     outgoingPackages_.push(info.pkg);
     info.lastSent = now;
     ++info.attempts;
 }
 
-std::optional<PackageId> SessionManager::parseAckPayload(const std::string& payload) const {
-    const std::string token = "\"ackPackageId\"";
+optional<PackageId> SessionManager::parseAckPayload(const string& payload) const {
+    const string token = "\"ackPackageId\"";
     size_t keyPos = payload.find(token);
-    if (keyPos == std::string::npos) {
-        return std::nullopt;
+    if (keyPos == string::npos) {
+        return nullopt;
     }
 
     size_t colonPos = payload.find(':', keyPos + token.size());
-    if (colonPos == std::string::npos) {
-        return std::nullopt;
+    if (colonPos == string::npos) {
+        return nullopt;
     }
 
     size_t valueStart = colonPos + 1;
-    while (valueStart < payload.size() && std::isspace(static_cast<unsigned char>(payload[valueStart]))) {
+    while (valueStart < payload.size() && isspace(static_cast<unsigned char>(payload[valueStart]))) {
         ++valueStart;
     }
 
@@ -146,38 +171,38 @@ std::optional<PackageId> SessionManager::parseAckPayload(const std::string& payl
     }
 
     size_t valueEnd = valueStart;
-    while (valueEnd < payload.size() && std::isdigit(static_cast<unsigned char>(payload[valueEnd]))) {
+    while (valueEnd < payload.size() && isdigit(static_cast<unsigned char>(payload[valueEnd]))) {
         ++valueEnd;
     }
 
     if (valueEnd == valueStart) {
-        return std::nullopt;
+        return nullopt;
     }
 
     try {
-        PackageId value = static_cast<PackageId>(std::stoll(payload.substr(valueStart, valueEnd - valueStart)));
+        PackageId value = static_cast<PackageId>(stoll(payload.substr(valueStart, valueEnd - valueStart)));
         return negative ? -value : value;
     } catch (...) {
-        return std::nullopt;
+        return nullopt;
     }
 }
 
 void SessionManager::handleAckPackage(const Package& pkg) {
     auto ackIdOpt = parseAckPayload(pkg.payload);
     if (!ackIdOpt.has_value()) {
-        std::cout << "[SessionManager] Failed to parse ACK payload: '" << pkg.payload << "'" << std::endl;
+        log(LogLevel::WARN, string("Failed to parse ACK payload: '") + pkg.payload + "'");
         return;
     }
 
-    std::function<void()> callback;
+    function<void()> callback;
 
     {
-        std::lock_guard<std::mutex> lock(queueMutex_);
+        lock_guard<mutex> lock(queueMutex_);
 
         PackageId ackId = *ackIdOpt;
         auto pkgMsgIt = packageToMessage_.find(ackId);
         if (pkgMsgIt == packageToMessage_.end()) {
-            std::cout << "[SessionManager] ACK for unknown packageId=" << ackId << std::endl;
+            log(LogLevel::WARN, string("ACK for unknown packageId=") + to_string(ackId));
             return;
         }
 
@@ -212,14 +237,14 @@ void SessionManager::sendAckForPackageLocked(const Package& pkg) {
         pkg.connId,
         0,
         1,
-        std::string{},
+        string{},
         MessageFormat::CONFIRMATION,
         pkg.priority + 1,
         false,
         PackageStatus::QUEUED
     };
 
-    ack.payload = std::string("{\"ackPackageId\":") + std::to_string(pkg.packageId) + "}";
+    ack.payload = string("{\"ackPackageId\":") + to_string(pkg.packageId) + "}";
     outgoingPackages_.push(ack);
 }
 
@@ -229,15 +254,15 @@ void SessionManager::receivePackage(const Package& pkg) {
         return;
     }
 
-    std::cout << "[SessionManager] receivePackage: msgId=" << pkg.messageId
-              << ", fragId=" << pkg.fragmentId << "/" << pkg.fragmentsCount
-              << ", payload='" << pkg.payload << "'" << std::endl;
+    log(LogLevel::DEBUG, string("receivePackage: msgId=") + to_string(pkg.messageId) +
+            ", fragId=" + to_string(pkg.fragmentId) + "/" + to_string(pkg.fragmentsCount) +
+            ", payload='" + pkg.payload + "'");
 
     Message messageToDeliver{};
     bool shouldDeliver = false;
 
     {
-        std::lock_guard<std::mutex> lock(queueMutex_);
+        lock_guard<mutex> lock(queueMutex_);
 
         if (pkg.requireAck) {
             sendAckForPackageLocked(pkg);
@@ -245,21 +270,21 @@ void SessionManager::receivePackage(const Package& pkg) {
 
         receivedPackages_[pkg.messageId].push_back(pkg);
         auto& vec = receivedPackages_[pkg.messageId];
-        std::cout << "[SessionManager] fragments received for msgId=" << pkg.messageId
-                  << ": " << vec.size() << "/" << pkg.fragmentsCount << std::endl;
+        log(LogLevel::DEBUG, string("Fragments received for msgId=") + to_string(pkg.messageId) +
+                ": " + to_string(vec.size()) + "/" + to_string(pkg.fragmentsCount));
 
         if (static_cast<int>(vec.size()) < pkg.fragmentsCount) {
             return;
         }
 
-        std::sort(vec.begin(), vec.end(), [](const Package& a, const Package& b) { return a.fragmentId < b.fragmentId; });
-        std::string fullPayload;
+        sort(vec.begin(), vec.end(), [](const Package& a, const Package& b) { return a.fragmentId < b.fragmentId; });
+        string fullPayload;
         fullPayload.reserve(vec.size() * maxPacketSize_);
 
         for (int i = 0; i < pkg.fragmentsCount; ++i) {
             if (vec[i].fragmentId != i) {
-                std::cout << "[SessionManager] Fragment index mismatch at i=" << i
-                          << ", got " << vec[i].fragmentId << ". Returning." << std::endl;
+                log(LogLevel::WARN, string("Fragment index mismatch at i=") + to_string(i) +
+                        ", got " + to_string(vec[i].fragmentId));
                 return;
             }
             fullPayload += vec[i].payload;
@@ -277,8 +302,7 @@ void SessionManager::receivePackage(const Package& pkg) {
             nullptr
         };
         shouldDeliver = true;
-        std::cout << "[SessionManager] All fragments received. Passing message up: '"
-                  << fullPayload << "'" << std::endl;
+        log(LogLevel::DEBUG, string("All fragments received. Passing message up: '") + fullPayload + "'");
     }
 
     if (shouldDeliver) {
@@ -287,7 +311,7 @@ void SessionManager::receivePackage(const Package& pkg) {
 }
 
 bool SessionManager::getNextPackage(Package& out) {
-    std::lock_guard<std::mutex> lock(queueMutex_);
+    lock_guard<mutex> lock(queueMutex_);
     if (outgoingPackages_.empty()) {
         return false;
     }

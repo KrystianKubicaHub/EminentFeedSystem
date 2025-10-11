@@ -8,6 +8,16 @@ target_include_directories(CodingModule PUBLIC
     transport_layer/include
     common
 )
+
+target_link_libraries(CodingModule PUBLIC common_utils)
+
+add_library(common_utils
+    common/logging.cpp
+)
+
+target_include_directories(common_utils PUBLIC
+    common
+)
 include_directories(${CMAKE_SOURCE_DIR}/common)
 include_directories(${CMAKE_SOURCE_DIR}/sdk/include)
 include_directories(${CMAKE_SOURCE_DIR}/transport_layer/include)
@@ -32,6 +42,8 @@ target_include_directories(eminent_sdk PUBLIC
     common
 )
 
+target_link_libraries(eminent_sdk PUBLIC common_utils)
+
 add_library(session_manager
     session_manager/src/session_manager.cpp
 )
@@ -39,6 +51,8 @@ add_library(session_manager
 target_include_directories(session_manager PUBLIC
     session_manager/include
 )
+
+target_link_libraries(session_manager PUBLIC common_utils)
 
 
 add_library(transport_layer
@@ -50,6 +64,8 @@ target_include_directories(transport_layer PUBLIC
     session_manager/include
 )
 
+target_link_libraries(transport_layer PUBLIC common_utils)
+
 
 
 add_library(physical_layer
@@ -59,6 +75,8 @@ add_library(physical_layer
 target_include_directories(physical_layer PUBLIC
     physical_layer/include
 )
+
+target_link_libraries(physical_layer PUBLIC common_utils)
 
 
 # Tworzymy tylko główny plik wykonywalny z app/main.cpp
@@ -72,6 +90,7 @@ target_link_libraries(eminent_demo
     transport_layer
     physical_layer
     CodingModule
+    common_utils
 )
 
 target_include_directories(eminent_demo PRIVATE
@@ -91,6 +110,7 @@ target_link_libraries(test_stabilnosci_2_synchroniczny
     transport_layer
     physical_layer
     CodingModule
+    common_utils
 )
 
 target_include_directories(test_stabilnosci_2_synchroniczny PRIVATE

@@ -1,27 +1,29 @@
 #pragma once
 
-#include <common_types.hpp>
+#include <functional>
 #include <optional>
+#include <queue>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <common_types.hpp>
+#include <logging.hpp>
 #include "session_manager.hpp"
 #include "transport_layer.hpp"
-
 #include "physical_layer.hpp"
 #include "CodingModule.hpp"
 
+using namespace std;
 
-class EminentSdk {
+class EminentSdk : public LoggerBase {
 public:
-    EminentSdk(
-        int localPort,
-        const std::string& remoteHost,
-        int remotePort
-    );
+    EminentSdk(int localPort, const string& remoteHost, int remotePort);
 
     void initialize(
         DeviceId selfId,
         function<void()> onSuccess,
         function<void(const string&)> onFailure,
-        function<bool(DeviceId, const std::string& payload)> onIncomingConnectionDecision,
+        function<bool(DeviceId, const string& payload)> onIncomingConnectionDecision,
         function<void(ConnectionId, DeviceId)> onConnectionEstablished = nullptr
     );
 
@@ -49,9 +51,9 @@ public:
 
     void handleReceivedMessage(const Message& msg);
     void onMessageReceived(const Message& msg);
-    void complexConsoleInfo(const std::string& title = "");
+    void complexConsoleInfo(const string& title = "");
     void setDefaultPriority(ConnectionId id, Priority priority);
-    void setOnMessageHandler(ConnectionId id, std::function<void(const Message&)> handler);
+    void setOnMessageHandler(ConnectionId id, function<void(const Message&)> handler);
 
     void getStats(
         function<void(const vector<ConnectionStats>&)> onStats,
@@ -65,8 +67,8 @@ private:
     int nextMsgId_ = 1;
 
     bool initialized_ = false;
-    std::function<bool(DeviceId, const std::string& payload)> onIncomingConnectionDecision_;
-    std::function<void(ConnectionId, DeviceId)> onConnectionEstablished_;
+    function<bool(DeviceId, const string& payload)> onIncomingConnectionDecision_;
+    function<void(ConnectionId, DeviceId)> onConnectionEstablished_;
     unordered_map<int, Connection> connections_;
     queue<Message> outgoingQueue_;
 
@@ -75,8 +77,9 @@ private:
     CodingModule codingModule_;
     PhysicalLayerUdp physicalLayer_;
     int localPort_;
-    std::string remoteHost_;
+    string remoteHost_;
     int remotePort_;
+
     struct HandshakePayload {
         bool hasDeviceId = false;
         int deviceId = 0;
@@ -88,11 +91,11 @@ private:
         bool finalConfirmation = false;
     };
 
-    std::optional<HandshakePayload> parseHandshakePayload(const std::string& payload);
+    optional<HandshakePayload> parseHandshakePayload(const string& payload);
     void handleHandshakeRequest(const Message& msg, const HandshakePayload& payload);
     void handleHandshakeResponse(const Message& msg, const HandshakePayload& payload);
     void handleHandshakeFinalConfirmation(const Message& msg, const HandshakePayload& payload);
     void handleJsonMessage(const Message& msg);
     void handleVideoMessage(const Message& msg);
-    std::string statusToString(ConnectionStatus status) const;
+    string statusToString(ConnectionStatus status) const;
 };

@@ -1,19 +1,19 @@
-#include "session_manager.hpp"
-#include "transport_layer.hpp"
-#include "physical_layer.hpp"
 #include "eminent_sdk.hpp"
-#include <iostream>
+
+#include <algorithm>
+#include <cctype>
 #include <random>
 #include <sstream>
-#include <cctype>
-#include <algorithm>
+#include <stdexcept>
+#include <utility>
 
 using namespace std;
 
 
 
-EminentSdk::EminentSdk(int localPort, const std::string& remoteHost, int remotePort)
-    : sessionManager_(outgoingQueue_, *this),
+EminentSdk::EminentSdk(int localPort, const string& remoteHost, int remotePort)
+        : LoggerBase("EminentSdk"),
+            sessionManager_(outgoingQueue_, *this),
       transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_),
       codingModule_(transportLayer_.getOutgoingFrames(), transportLayer_),
       physicalLayer_(localPort, remoteHost, remotePort, codingModule_.getOutgoingFrames(), codingModule_),
@@ -25,14 +25,14 @@ EminentSdk::EminentSdk(int localPort, const std::string& remoteHost, int remoteP
 
 
 void EminentSdk::onMessageReceived(const Message& msg) {
-    std::cout << "[EminentSdk] onMessageReceived: ";
-    std::cout << "{ id=" << msg.id
-              << ", connId=" << msg.connId
-              << ", payload='" << msg.payload << "'"
-              << ", format=" << static_cast<int>(msg.format)
-              << ", priority=" << msg.priority
-              << ", requireAck=" << msg.requireAck
-              << " }" << std::endl;
+    ostringstream oss;
+    oss << "onMessageReceived id=" << msg.id
+        << " connId=" << msg.connId
+        << " payload='" << msg.payload << "'"
+        << " format=" << static_cast<int>(msg.format)
+        << " priority=" << msg.priority
+        << " requireAck=" << msg.requireAck;
+    log(LogLevel::INFO, oss.str());
     switch (msg.format) {
         case MessageFormat::JSON:
             handleJsonMessage(msg);
@@ -43,11 +43,11 @@ void EminentSdk::onMessageReceived(const Message& msg) {
         case MessageFormat::HANDSHAKE: {
             auto payload = parseHandshakePayload(msg.payload);
             if (!payload.has_value()) {
-                std::cout << "[EminentSdk] Failed to parse handshake payload." << std::endl;
+                log(LogLevel::WARN, string("Failed to parse handshake payload: '") + msg.payload + "'");
                 return;
             }
             if (!payload->hasDeviceId || !payload->hasSpecialCode) {
-                std::cout << "[EminentSdk] Handshake payload missing required fields." << std::endl;
+                log(LogLevel::WARN, "Handshake payload missing required fields");
                 return;
             }
             if (payload->hasFinalConfirmation && payload->finalConfirmation) {
@@ -60,7 +60,7 @@ void EminentSdk::onMessageReceived(const Message& msg) {
             break;
         }
         default:
-            std::cout << "[EminentSdk] Unknown message format received." << std::endl;
+            log(LogLevel::WARN, string("Unknown message format: ") + to_string(static_cast<int>(msg.format)));
             break;
     }
 }
@@ -68,7 +68,7 @@ void EminentSdk::onMessageReceived(const Message& msg) {
 void EminentSdk::handleJsonMessage(const Message& msg) {
     auto it = connections_.find(msg.connId);
     if (it == connections_.end()) {
-        auto match = std::find_if(
+        auto match = find_if(
             connections_.begin(),
             connections_.end(),
             [&](const auto& entry) {
@@ -76,7 +76,7 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
             }
         );
         if (match == connections_.end()) {
-            std::cout << "[EminentSdk] JSON message received for unknown connectionId=" << msg.connId << std::endl;
+            log(LogLevel::WARN, string("JSON message for unknown connectionId=") + to_string(msg.connId));
             return;
         }
         it = match;
@@ -84,26 +84,26 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
 
     const Connection& conn = it->second;
 
-    auto extractStringField = [](const std::string& json, const std::string& key) -> std::optional<std::string> {
-        const std::string token = "\"" + key + "\"";
+    auto extractStringField = [](const string& json, const string& key) -> optional<string> {
+        const string token = "\"" + key + "\"";
         size_t keyPos = json.find(token);
-        if (keyPos == std::string::npos) {
-            return std::nullopt;
+        if (keyPos == string::npos) {
+            return nullopt;
         }
         size_t colon = json.find(":", keyPos + token.size());
-        if (colon == std::string::npos) {
-            return std::nullopt;
+        if (colon == string::npos) {
+            return nullopt;
         }
         size_t valueStart = colon + 1;
-        while (valueStart < json.size() && std::isspace(static_cast<unsigned char>(json[valueStart]))) {
+        while (valueStart < json.size() && isspace(static_cast<unsigned char>(json[valueStart]))) {
             ++valueStart;
         }
         if (valueStart >= json.size()) {
-            return std::nullopt;
+            return nullopt;
         }
         if (json[valueStart] == '"') {
             ++valueStart;
-            std::string result;
+            string result;
             bool escape = false;
             for (size_t i = valueStart; i < json.size(); ++i) {
                 char c = json[i];
@@ -118,15 +118,15 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
                     result.push_back(c);
                 }
             }
-            return std::nullopt;
+            return nullopt;
         }
 
         size_t valueEnd = valueStart;
-        while (valueEnd < json.size() && json[valueEnd] != ',' && json[valueEnd] != '}' && !std::isspace(static_cast<unsigned char>(json[valueEnd]))) {
+        while (valueEnd < json.size() && json[valueEnd] != ',' && json[valueEnd] != '}' && !isspace(static_cast<unsigned char>(json[valueEnd]))) {
             ++valueEnd;
         }
         if (valueEnd <= valueStart) {
-            return std::nullopt;
+            return nullopt;
         }
         return json.substr(valueStart, valueEnd - valueStart);
     };
@@ -134,29 +134,30 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
     auto text = extractStringField(msg.payload, "text");
     auto from = extractStringField(msg.payload, "from");
 
-    std::cout << "[EminentSdk] JSON message on connection " << conn.id
-              << " (remoteId=" << conn.remoteId << ")" << std::endl;
+    ostringstream oss;
+    oss << "JSON message on connection " << conn.id << " remoteId=" << conn.remoteId;
     if (from.has_value()) {
-        std::cout << "  from: " << *from << std::endl;
+        oss << " from=" << *from;
     }
     if (text.has_value()) {
-        std::cout << "  text: " << *text << std::endl;
+        oss << " text='" << *text << "'";
     } else {
-        std::cout << "  payload: " << msg.payload << std::endl;
+        oss << " payload='" << msg.payload << "'";
     }
+    log(LogLevel::INFO, oss.str());
 
     if (conn.onMessage) {
         conn.onMessage(msg);
     } else {
-        std::cout << "[EminentSdk] No onMessage callback registered for connection " << conn.id << std::endl;
+        log(LogLevel::WARN, string("No onMessage callback for connection ") + to_string(conn.id));
     }
 }
 
 void EminentSdk::handleVideoMessage(const Message& msg) {
-    std::cout << "[EminentSdk] VIDEO messages are not supported yet. Payload size: " << msg.payload.size() << std::endl;
+    log(LogLevel::INFO, string("VIDEO messages not supported; payload size=") + to_string(msg.payload.size()));
 }
 
-std::string EminentSdk::statusToString(ConnectionStatus status) const {
+string EminentSdk::statusToString(ConnectionStatus status) const {
     switch (status) {
         case ConnectionStatus::PENDING:
             return "PENDING";
@@ -171,15 +172,16 @@ std::string EminentSdk::statusToString(ConnectionStatus status) const {
     }
 }
 
-void EminentSdk::complexConsoleInfo(const std::string& title) {
-    std::cout << "\n\n";
+void EminentSdk::complexConsoleInfo(const string& title) {
+    ostringstream summary;
+    summary << "\n\n";
     if (!title.empty()) {
-        std::cout << "========== " << title << " ==========" << std::endl;
+        summary << "========== " << title << " ==========" << '\n';
     } else {
-        std::cout << "========== SDK SUMMARY ==========" << std::endl;
+        summary << "========== SDK SUMMARY ==========" << '\n';
     }
 
-    size_t activeCount = std::count_if(
+    size_t activeCount = count_if(
         connections_.begin(),
         connections_.end(),
         [](const auto& entry) {
@@ -187,33 +189,32 @@ void EminentSdk::complexConsoleInfo(const std::string& title) {
         }
     );
 
-    std::cout << "Device ID: " << deviceId_ << std::endl;
-    std::cout << "Local port: " << localPort_ << std::endl;
-    std::cout << "Remote endpoint: " << remoteHost_ << ':' << remotePort_ << std::endl;
-    std::cout << "Total connections: " << connections_.size() << std::endl;
-    std::cout << "Active connections: " << activeCount << std::endl;
+    summary << "Device ID: " << deviceId_ << '\n';
+    summary << "Local port: " << localPort_ << '\n';
+    summary << "Remote endpoint: " << remoteHost_ << ':' << remotePort_ << '\n';
+    summary << "Total connections: " << connections_.size() << '\n';
+    summary << "Active connections: " << activeCount << '\n';
 
     if (connections_.empty()) {
-        std::cout << "(no connections)" << std::endl;
+        summary << "(no connections)\n";
     } else {
-        std::cout << "--- Connections ---" << std::endl;
+        summary << "--- Connections ---\n";
         for (const auto& [cid, conn] : connections_) {
-            std::cout << "Connection ID: " << conn.id << std::endl;
-            std::cout << "  key: " << cid << std::endl;
-            std::cout << "  remoteId: " << conn.remoteId << std::endl;
-            std::cout << "  defaultPriority: " << conn.defaultPriority << std::endl;
-            std::cout << "  status: " << statusToString(conn.status) << std::endl;
-            std::cout << "  specialCode: " << conn.specialCode << std::endl;
-            std::cout << "  callbacks: onMessage=" << (conn.onMessage ? "yes" : "no")
-                      << ", onTrouble=" << (conn.onTrouble ? "yes" : "no")
-                      << ", onDisconnected=" << (conn.onDisconnected ? "yes" : "no")
-                      << ", onConnected=" << (conn.onConnected ? "yes" : "no")
-                      << std::endl;
+            summary << "Connection ID: " << conn.id << '\n';
+            summary << "  key: " << cid << '\n';
+            summary << "  remoteId: " << conn.remoteId << '\n';
+            summary << "  defaultPriority: " << conn.defaultPriority << '\n';
+            summary << "  status: " << statusToString(conn.status) << '\n';
+            summary << "  specialCode: " << conn.specialCode << '\n';
+            summary << "  callbacks: onMessage=" << (conn.onMessage ? "yes" : "no")
+                    << ", onTrouble=" << (conn.onTrouble ? "yes" : "no")
+                    << ", onDisconnected=" << (conn.onDisconnected ? "yes" : "no")
+                    << ", onConnected=" << (conn.onConnected ? "yes" : "no") << '\n';
         }
     }
 
-    std::cout << "========== END SUMMARY ==========" << std::endl;
-    std::cout << "\n\n";
+    summary << "========== END SUMMARY ==========" << "\n\n";
+    log(LogLevel::INFO, summary.str());
 }
 
 void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePayload& payload) {
@@ -222,11 +223,11 @@ void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePaylo
         accepted = onIncomingConnectionDecision_(payload.deviceId, msg.payload);
     }
     if (!accepted) {
-        std::cout << "[EminentSdk] Handshake from connId=" << msg.connId << " rejected by user decision." << std::endl;
+        log(LogLevel::INFO, string("Handshake connId=") + to_string(msg.connId) + " rejected by decision");
         return;
     }
 
-    std::cout << "[EminentSdk] Handshake from connId=" << msg.connId << " accepted. Generating new connectionId and sending response." << std::endl;
+    log(LogLevel::INFO, string("Handshake connId=") + to_string(msg.connId) + " accepted -> sending response");
 
     int myConnId = nextPrime();
     int combinedId = msg.connId * myConnId;
@@ -239,12 +240,12 @@ void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePaylo
     conn.specialCode = payload.specialCode;
     connections_[combinedId] = conn;
 
-    std::cout << "[EminentSdk] Connection " << combinedId << " status set to ACCEPTED." << std::endl;
+    log(LogLevel::INFO, string("Connection ") + to_string(combinedId) + " status set to ACCEPTED");
 
     MessageId mid = nextMsgId_++;
-    std::ostringstream oss;
+    ostringstream oss;
     oss << "{\"deviceId\": " << deviceId_ << ", \"specialCode\": " << conn.specialCode << ", \"newId\": " << myConnId << "}";
-    std::string respPayload = oss.str();
+    string respPayload = oss.str();
     Message respMsg{mid, msg.connId, respPayload, MessageFormat::HANDSHAKE, 0, false, nullptr};
     outgoingQueue_.push(respMsg);
 }
@@ -252,7 +253,7 @@ void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePaylo
 void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayload& payload) {
     auto it = connections_.find(msg.connId);
     if (it == connections_.end()) {
-        std::cout << "[EminentSdk] Received handshake response for unknown connectionId=" << msg.connId << std::endl;
+        log(LogLevel::WARN, string("Handshake response for unknown connectionId=") + to_string(msg.connId));
         return;
     }
 
@@ -266,16 +267,16 @@ void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayl
     conn.status = ConnectionStatus::ACTIVE;
     connections_[combinedId] = conn;
 
-    std::cout << "[EminentSdk] Connection " << combinedId << " is now ACTIVE." << std::endl;
+    log(LogLevel::INFO, string("Connection ") + to_string(combinedId) + " is now ACTIVE");
 
     if (conn.onConnected) {
         conn.onConnected(conn.id);
     }
 
     MessageId ackId = nextMsgId_++;
-    std::ostringstream oss;
+    ostringstream oss;
     oss << "{\"deviceId\": " << deviceId_ << ", \"specialCode\": " << conn.specialCode << ", \"finalConfirmation\": true}";
-    std::string ackPayload = oss.str();
+    string ackPayload = oss.str();
     Message finalAck{ackId, combinedId, ackPayload, MessageFormat::HANDSHAKE, 0, false, nullptr};
     outgoingQueue_.push(finalAck);
 }
@@ -283,7 +284,7 @@ void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayl
 void EminentSdk::handleHandshakeFinalConfirmation(const Message& msg, const HandshakePayload& payload) {
     auto it = connections_.find(msg.connId);
     if (it == connections_.end()) {
-        std::cout << "[EminentSdk] Received final confirmation for unknown connectionId=" << msg.connId << std::endl;
+        log(LogLevel::WARN, string("Final confirmation for unknown connectionId=") + to_string(msg.connId));
         return;
     }
 
@@ -294,7 +295,7 @@ void EminentSdk::handleHandshakeFinalConfirmation(const Message& msg, const Hand
     conn.status = ConnectionStatus::ACTIVE;
 
     if (!wasActive) {
-        std::cout << "[EminentSdk] Connection " << conn.id << " marked ACTIVE after final confirmation." << std::endl;
+        log(LogLevel::INFO, string("Connection ") + to_string(conn.id) + " marked ACTIVE after final confirmation");
         if (onConnectionEstablished_) {
             onConnectionEstablished_(conn.id, conn.remoteId);
         }
@@ -305,50 +306,50 @@ void EminentSdk::handleHandshakeFinalConfirmation(const Message& msg, const Hand
     }
 }
 
-std::optional<EminentSdk::HandshakePayload> EminentSdk::parseHandshakePayload(const std::string& payload) {
+optional<EminentSdk::HandshakePayload> EminentSdk::parseHandshakePayload(const string& payload) {
     HandshakePayload result;
 
-    auto parseIntField = [&](const std::string& key) -> std::optional<int> {
-        const std::string token = "\"" + key + "\"";
+    auto parseIntField = [&](const string& key) -> optional<int> {
+        const string token = "\"" + key + "\"";
         size_t keyPos = payload.find(token);
-        if (keyPos == std::string::npos) {
-            return std::nullopt;
+        if (keyPos == string::npos) {
+            return nullopt;
         }
         size_t colon = payload.find(":", keyPos + token.size());
-        if (colon == std::string::npos) {
-            return std::nullopt;
+        if (colon == string::npos) {
+            return nullopt;
         }
         size_t valueStart = colon + 1;
-        while (valueStart < payload.size() && std::isspace(static_cast<unsigned char>(payload[valueStart]))) {
+        while (valueStart < payload.size() && isspace(static_cast<unsigned char>(payload[valueStart]))) {
             ++valueStart;
         }
         size_t valueEnd = valueStart;
-        while (valueEnd < payload.size() && (std::isdigit(static_cast<unsigned char>(payload[valueEnd])) || payload[valueEnd] == '-')) {
+        while (valueEnd < payload.size() && (isdigit(static_cast<unsigned char>(payload[valueEnd])) || payload[valueEnd] == '-')) {
             ++valueEnd;
         }
         if (valueStart == valueEnd) {
-            return std::nullopt;
+            return nullopt;
         }
         try {
-            int value = std::stoi(payload.substr(valueStart, valueEnd - valueStart));
+            int value = stoi(payload.substr(valueStart, valueEnd - valueStart));
             return value;
         } catch (...) {
-            return std::nullopt;
+            return nullopt;
         }
     };
 
-    auto parseBoolField = [&](const std::string& key) -> std::optional<bool> {
-        const std::string token = "\"" + key + "\"";
+    auto parseBoolField = [&](const string& key) -> optional<bool> {
+        const string token = "\"" + key + "\"";
         size_t keyPos = payload.find(token);
-        if (keyPos == std::string::npos) {
-            return std::nullopt;
+        if (keyPos == string::npos) {
+            return nullopt;
         }
         size_t colon = payload.find(":", keyPos + token.size());
-        if (colon == std::string::npos) {
-            return std::nullopt;
+        if (colon == string::npos) {
+            return nullopt;
         }
         size_t valueStart = colon + 1;
-        while (valueStart < payload.size() && std::isspace(static_cast<unsigned char>(payload[valueStart]))) {
+        while (valueStart < payload.size() && isspace(static_cast<unsigned char>(payload[valueStart]))) {
             ++valueStart;
         }
         if (payload.compare(valueStart, 4, "true") == 0) {
@@ -357,7 +358,7 @@ std::optional<EminentSdk::HandshakePayload> EminentSdk::parseHandshakePayload(co
         if (payload.compare(valueStart, 5, "false") == 0) {
             return false;
         }
-        return std::nullopt;
+        return nullopt;
     };
 
     if (auto val = parseIntField("deviceId")) {
@@ -378,7 +379,7 @@ std::optional<EminentSdk::HandshakePayload> EminentSdk::parseHandshakePayload(co
     }
 
     if (!result.hasDeviceId && !result.hasSpecialCode && !result.hasNewId) {
-        return std::nullopt;
+        return nullopt;
     }
 
     return result;
@@ -388,7 +389,7 @@ void EminentSdk::initialize(
     DeviceId selfId,
     function<void()> onSuccess,
     function<void(const string&)> onFailure,
-    function<bool(DeviceId, const std::string& payload)> onIncomingConnectionDecision,
+    function<bool(DeviceId, const string& payload)> onIncomingConnectionDecision,
     function<void(ConnectionId, DeviceId)> onConnectionEstablished 
 ) {
     if (initialized_) {
@@ -403,7 +404,7 @@ void EminentSdk::initialize(
     onConnectionEstablished_ = onConnectionEstablished; 
    
     initialized_ = true;
-    cout << "SDK initialized for device: " << selfId << endl;
+    log(LogLevel::INFO, string("SDK initialized for device ") + to_string(selfId));
     if (onSuccess) {
         onSuccess();
     }
@@ -454,22 +455,20 @@ void EminentSdk::connect(
     conn.onDisconnected = onDisconnected;
     conn.onConnected = onConnected;
     conn.status = ConnectionStatus::PENDING;
-    // Losowy klucz
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> dist(100000, 999999);
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<int> dist(100000, 999999);
     conn.specialCode = dist(gen);
     connections_[cid] = conn;
 
     MessageId mid = nextMsgId_++;
-    // Serializacja JSON handshake
-    std::ostringstream oss;
+    ostringstream oss;
     oss << "{\"deviceId\": " << deviceId_ << ", \"specialCode\": " << conn.specialCode << "}";
     string payload = oss.str();
     Message handshakeMsg{mid, cid, payload, MessageFormat::HANDSHAKE, defaultPriority, true, [onSuccess, cid]() { if (onSuccess) onSuccess(cid); }};
     outgoingQueue_.push(handshakeMsg);
 
-    cout << "trying to connect to device " << targetId << " with connection ID " << cid << endl;
+    log(LogLevel::INFO, string("Initiating handshake to device ") + to_string(targetId) + " connectionId=" + to_string(cid));
 }
 
 void EminentSdk::close(ConnectionId id) {
@@ -478,7 +477,7 @@ void EminentSdk::close(ConnectionId id) {
             connections_[id].onDisconnected();
         }
         connections_.erase(id);
-        cout << "Connection " << id << " closed." << endl;
+        log(LogLevel::INFO, string("Connection ") + to_string(id) + " closed");
     }
 }
 
@@ -491,23 +490,23 @@ void EminentSdk::send(
     function<void()> onDelivered
 ) {
     if (!connections_.count(id)) {
-        throw std::runtime_error("Send failed: invalid connection ID.");
+        throw runtime_error("Send failed: invalid connection ID.");
     }
     if (connections_[id].status == ConnectionStatus::PENDING) {
-        throw std::runtime_error("Send failed: connection is still pending.");
+        throw runtime_error("Send failed: connection is still pending.");
     }
 
     MessageId mid = nextMsgId_++;
     Message msg{ mid, id, payload, format, priority, requireAck, onDelivered };
     outgoingQueue_.push(msg);
 
-    cout << "Message queued with ID " << mid << " on connection " << id << endl;
+    log(LogLevel::DEBUG, string("Queued message id=") + to_string(mid) + " connection=" + to_string(id));
 }
 
 void EminentSdk::setDefaultPriority(ConnectionId id, Priority priority) {
     auto it = connections_.find(id);
     if (it == connections_.end()) {
-        auto match = std::find_if(
+        auto match = find_if(
             connections_.begin(),
             connections_.end(),
             [id](const auto& entry) {
@@ -515,21 +514,21 @@ void EminentSdk::setDefaultPriority(ConnectionId id, Priority priority) {
             }
         );
         if (match == connections_.end()) {
-            std::cout << "[EminentSdk] setDefaultPriority: connection " << id << " not found." << std::endl;
+            log(LogLevel::WARN, string("setDefaultPriority: connection ") + to_string(id) + " not found");
             return;
         }
         it = match;
     }
 
     it->second.defaultPriority = priority;
-    std::cout << "[EminentSdk] Connection " << it->second.id
-              << " default priority set to " << priority << std::endl;
+    log(LogLevel::INFO, string("Connection ") + to_string(it->second.id) +
+            " default priority set to " + to_string(priority));
 }
 
-void EminentSdk::setOnMessageHandler(ConnectionId id, std::function<void(const Message&)> handler) {
+void EminentSdk::setOnMessageHandler(ConnectionId id, function<void(const Message&)> handler) {
     auto it = connections_.find(id);
     if (it == connections_.end()) {
-        auto match = std::find_if(
+        auto match = find_if(
             connections_.begin(),
             connections_.end(),
             [id](const auto& entry) {
@@ -537,15 +536,14 @@ void EminentSdk::setOnMessageHandler(ConnectionId id, std::function<void(const M
             }
         );
         if (match == connections_.end()) {
-            std::cout << "[EminentSdk] setOnMessageHandler: connection " << id << " not found." << std::endl;
+            log(LogLevel::WARN, string("setOnMessageHandler: connection ") + to_string(id) + " not found");
             return;
         }
         it = match;
     }
 
-    it->second.onMessage = std::move(handler);
-    std::cout << "[EminentSdk] Connection " << it->second.id
-              << " onMessage handler updated." << std::endl;
+    it->second.onMessage = move(handler);
+    log(LogLevel::INFO, string("Connection ") + to_string(it->second.id) + " onMessage handler updated");
 }
 
 void EminentSdk::getStats(

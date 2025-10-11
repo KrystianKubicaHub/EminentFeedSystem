@@ -1,27 +1,10 @@
 #pragma once
-using namespace std;
 
-using DeviceId = int;
-using ConnectionId = int;
-using MessageId = int;
-using PackageId = int;
-using Priority = int;
-
-
-#include <string>
 #include <functional>
-#include <vector>
-#include <unordered_map>
 #include <queue>
-
-
-#pragma once
-
 #include <string>
-#include <functional>
-#include <vector>
 #include <unordered_map>
-#include <queue>
+#include <vector>
 
 using namespace std;
 
@@ -46,22 +29,21 @@ enum class PackageStatus {
 };
 
 struct Frame {
-    std::vector<uint8_t> data;
+    vector<uint8_t> data;
 };
-struct Package {
 
+struct Package {
     PackageId packageId;
     MessageId messageId;
     ConnectionId connId;
     int fragmentId;
     int fragmentsCount;
-    std::string payload;
+    string payload;
     MessageFormat format;
     Priority priority;
     bool requireAck;
     PackageStatus status = PackageStatus::QUEUED;
 };
-
 
 struct ConnectionStats {
     ConnectionId id;
@@ -82,10 +64,10 @@ struct Message {
 };
 
 enum class ConnectionStatus {
-    PENDING, // wysłana prośba o połączenie
-    ACCEPTED, // zaakceptowaliśmy, możemy odbierać wiadomości, ale nie mamy potwierdzenia od drugiej strony
-    ACTIVE, // aktywne
-    FAILED // klęska
+    PENDING,
+    ACCEPTED,
+    ACTIVE,
+    FAILED
 };
 
 struct Connection {
