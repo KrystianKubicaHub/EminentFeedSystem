@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -10,16 +11,19 @@
 using namespace std;
 
 EminentSdk::EminentSdk(int localPort, const string& remoteHost, int remotePort, LogLevel logLevel)
-                : LoggerBase("EminentSdk"),
-            sessionManager_(outgoingQueue_, *this),
-      transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_),
-      codingModule_(transportLayer_.getOutgoingFrames(), transportLayer_),
-      physicalLayer_(localPort, remoteHost, remotePort, codingModule_.getOutgoingFrames(), codingModule_),
+    : EminentSdk(localPort, remoteHost, remotePort, ValidationConfig{}, logLevel) {}
+
+EminentSdk::EminentSdk(int localPort, const string& remoteHost, int remotePort, const ValidationConfig& validationConfig, LogLevel logLevel)
+    : LoggerBase("EminentSdk"),
+    validationConfig_(validationConfig),
+        sessionManager_(outgoingQueue_, *this, validationConfig_),
+            transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_, validationConfig_),
+            codingModule_(transportLayer_.getOutgoingFrames(), transportLayer_, validationConfig_),
+    physicalLayer_(localPort, remoteHost, remotePort, codingModule_.getOutgoingFrames(), codingModule_, validationConfig_),
       localPort_(localPort),
       remoteHost_(remoteHost),
-            remotePort_(remotePort)
-{
-        LoggerConfig::setLevel(logLevel);
+      remotePort_(remotePort) {
+    LoggerConfig::setLevel(logLevel);
 }
 
 
@@ -217,6 +221,15 @@ void EminentSdk::complexConsoleInfo(const string& title) {
 }
 
 void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePayload& payload) {
+    try {
+        validationConfig_.validateConnectionId(msg.connId);
+        validationConfig_.validateDeviceId(payload.deviceId);
+        validationConfig_.validateSpecialCode(payload.specialCode);
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Handshake request rejected: ") + ex.what());
+        return;
+    }
+
     bool accepted = false;
     if (onIncomingConnectionDecision_) {
         accepted = onIncomingConnectionDecision_(payload.deviceId, msg.payload);
@@ -228,8 +241,19 @@ void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePaylo
 
     log(LogLevel::INFO, string("Handshake connId=") + to_string(msg.connId) + " accepted -> sending response");
 
-    int myConnId = nextPrime();
-    int combinedId = msg.connId * myConnId;
+    ConnectionId myConnId = nextPrime();
+    long long combinedProduct = static_cast<long long>(msg.connId) * static_cast<long long>(myConnId);
+    if (combinedProduct <= 0 || combinedProduct > numeric_limits<int>::max()) {
+        log(LogLevel::WARN, "Handshake combined connection id overflow");
+        return;
+    }
+    int combinedId = static_cast<int>(combinedProduct);
+    try {
+        validationConfig_.validateConnectionId(combinedId);
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Handshake combined connection id invalid: ") + ex.what());
+        return;
+    }
 
     Connection conn;
     conn.id = combinedId;
@@ -241,15 +265,34 @@ void EminentSdk::handleHandshakeRequest(const Message& msg, const HandshakePaylo
 
     log(LogLevel::INFO, string("Connection ") + to_string(combinedId) + " status set to ACCEPTED");
 
-    MessageId mid = nextMsgId_++;
+    MessageId mid = nextMessageId();
     ostringstream oss;
     oss << "{\"deviceId\": " << deviceId_ << ", \"specialCode\": " << conn.specialCode << ", \"newId\": " << myConnId << "}";
     string respPayload = oss.str();
     Message respMsg{mid, msg.connId, respPayload, MessageFormat::HANDSHAKE, 0, false, nullptr};
+    try {
+        validationConfig_.validateMessage(respMsg);
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Failed to queue handshake response: ") + ex.what());
+        connections_.erase(combinedId);
+        return;
+    }
     outgoingQueue_.push(respMsg);
 }
 
 void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayload& payload) {
+    try {
+        validationConfig_.validateConnectionId(msg.connId);
+        validationConfig_.validateDeviceId(payload.deviceId);
+        validationConfig_.validateSpecialCode(payload.specialCode);
+        if (payload.hasNewId) {
+            validationConfig_.validateConnectionId(payload.newId);
+        }
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Handshake response invalid: ") + ex.what());
+        return;
+    }
+
     auto it = connections_.find(msg.connId);
     if (it == connections_.end()) {
         log(LogLevel::WARN, string("Handshake response for unknown connectionId=") + to_string(msg.connId));
@@ -259,7 +302,18 @@ void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayl
     Connection conn = it->second;
     connections_.erase(it);
 
-    int combinedId = msg.connId * payload.newId;
+    long long combinedProduct = static_cast<long long>(msg.connId) * static_cast<long long>(payload.newId);
+    if (combinedProduct <= 0 || combinedProduct > numeric_limits<int>::max()) {
+        log(LogLevel::WARN, "Handshake response combined connection id overflow");
+        return;
+    }
+    int combinedId = static_cast<int>(combinedProduct);
+    try {
+        validationConfig_.validateConnectionId(combinedId);
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Handshake response combined connection id invalid: ") + ex.what());
+        return;
+    }
     conn.id = combinedId;
     conn.remoteId = payload.deviceId;
     conn.specialCode = payload.specialCode;
@@ -272,15 +326,35 @@ void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayl
         conn.onConnected(conn.id);
     }
 
-    MessageId ackId = nextMsgId_++;
+    MessageId ackId = nextMessageId();
     ostringstream oss;
     oss << "{\"deviceId\": " << deviceId_ << ", \"specialCode\": " << conn.specialCode << ", \"finalConfirmation\": true}";
     string ackPayload = oss.str();
     Message finalAck{ackId, combinedId, ackPayload, MessageFormat::HANDSHAKE, 0, false, nullptr};
+    try {
+        validationConfig_.validateMessage(finalAck);
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Failed to queue final handshake ack: ") + ex.what());
+        connections_.erase(combinedId);
+        return;
+    }
     outgoingQueue_.push(finalAck);
 }
 
 void EminentSdk::handleHandshakeFinalConfirmation(const Message& msg, const HandshakePayload& payload) {
+    try {
+        validationConfig_.validateConnectionId(msg.connId);
+        if (payload.hasDeviceId) {
+            validationConfig_.validateDeviceId(payload.deviceId);
+        }
+        if (payload.hasSpecialCode) {
+            validationConfig_.validateSpecialCode(payload.specialCode);
+        }
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Final confirmation invalid: ") + ex.what());
+        return;
+    }
+
     auto it = connections_.find(msg.connId);
     if (it == connections_.end()) {
         log(LogLevel::WARN, string("Final confirmation for unknown connectionId=") + to_string(msg.connId));
@@ -397,6 +471,16 @@ void EminentSdk::initialize(
         }
         return;
     }
+
+    try {
+        validationConfig_.validateDeviceId(selfId);
+    } catch (const exception& ex) {
+        log(LogLevel::ERROR, string("initialize: invalid device id: ") + ex.what());
+        if (onFailure) {
+            onFailure(ex.what());
+        }
+        return;
+    }
     deviceId_ = selfId;
 
     onIncomingConnectionDecision_ = onIncomingConnectionDecision;
@@ -409,9 +493,44 @@ void EminentSdk::initialize(
     }
 }
 
-int EminentSdk::nextPrime() {
-    int candidate = nextConnectionId_;
+MessageId EminentSdk::nextMessageId() {
+    try {
+        validationConfig_.validateMessageId(nextMsgId_);
+    } catch (const exception& ex) {
+        throw runtime_error(string("Unable to allocate message id: ") + ex.what());
+    }
+    return nextMsgId_++;
+}
+
+int EminentSdk::generateSpecialCode() {
+    uint8_t bits = validationConfig_.specialCodeBitWidth();
+    uint64_t maxValue = (bits == 32) ? numeric_limits<uint32_t>::max() : ((1ULL << bits) - 1ULL);
+    maxValue = min<uint64_t>(maxValue, numeric_limits<int>::max());
+
+    static random_device rd;
+    static mt19937 gen(rd());
+    uniform_int_distribution<uint64_t> dist(0, maxValue);
+
     while (true) {
+        int candidate = static_cast<int>(dist(gen));
+        try {
+            validationConfig_.validateSpecialCode(candidate);
+            return candidate;
+        } catch (const exception&) {
+            // regenerate
+        }
+    }
+}
+
+ConnectionId EminentSdk::nextPrime() {
+    ConnectionId candidate = nextConnectionId_;
+    while (true) {
+        try {
+            validationConfig_.validateConnectionId(candidate);
+        } catch (const exception& ex) {
+            throw runtime_error(string("Unable to allocate connection id: ") + ex.what());
+        }
+
         bool isPrime = candidate > 1;
         for (int i = 2; i * i <= candidate; ++i) {
             if (candidate % i == 0) {
@@ -422,6 +541,9 @@ int EminentSdk::nextPrime() {
         if (isPrime) {
             nextConnectionId_ = candidate + 1;
             return candidate;
+        }
+        if (candidate == numeric_limits<ConnectionId>::max()) {
+            throw runtime_error("Unable to allocate connection id: exhausted range");
         }
         ++candidate;
     }
@@ -437,9 +559,12 @@ void EminentSdk::connect(
     function<void(ConnectionId)> onConnected,
     function<void(const Message&)> onMessage
 ) {
-    if (targetId <= 0) {
+    try {
+        validationConfig_.validateDeviceId(targetId);
+        validationConfig_.validatePriority(defaultPriority);
+    } catch (const exception& ex) {
         if (onFailure) {
-            onFailure("Invalid target ID");
+            onFailure(ex.what());
         }
         return;
     }
@@ -454,17 +579,23 @@ void EminentSdk::connect(
     conn.onDisconnected = onDisconnected;
     conn.onConnected = onConnected;
     conn.status = ConnectionStatus::PENDING;
-    random_device rd;
-    mt19937 gen(rd());
-    uniform_int_distribution<int> dist(100000, 999999);
-    conn.specialCode = dist(gen);
+    conn.specialCode = generateSpecialCode();
     connections_[cid] = conn;
 
-    MessageId mid = nextMsgId_++;
+    MessageId mid = nextMessageId();
     ostringstream oss;
     oss << "{\"deviceId\": " << deviceId_ << ", \"specialCode\": " << conn.specialCode << "}";
     string payload = oss.str();
     Message handshakeMsg{mid, cid, payload, MessageFormat::HANDSHAKE, defaultPriority, true, [onSuccess, cid]() { if (onSuccess) onSuccess(cid); }};
+    try {
+        validationConfig_.validateMessage(handshakeMsg);
+    } catch (const exception& ex) {
+        connections_.erase(cid);
+        if (onFailure) {
+            onFailure(ex.what());
+        }
+        return;
+    }
     outgoingQueue_.push(handshakeMsg);
 
     log(LogLevel::INFO, string("Initiating handshake to device ") + to_string(targetId) + " connectionId=" + to_string(cid));
@@ -495,8 +626,19 @@ void EminentSdk::send(
         throw runtime_error("Send failed: connection is still pending.");
     }
 
-    MessageId mid = nextMsgId_++;
+    try {
+        validationConfig_.validatePriority(priority);
+    } catch (const exception& ex) {
+        throw runtime_error(string("Send failed: ") + ex.what());
+    }
+
+    MessageId mid = nextMessageId();
     Message msg{ mid, id, payload, format, priority, requireAck, onDelivered };
+    try {
+        validationConfig_.validateMessage(msg);
+    } catch (const exception& ex) {
+        throw runtime_error(string("Send failed: ") + ex.what());
+    }
     outgoingQueue_.push(msg);
 
     log(LogLevel::DEBUG, string("Queued message id=") + to_string(mid) + " connection=" + to_string(id));
@@ -517,6 +659,13 @@ void EminentSdk::setDefaultPriority(ConnectionId id, Priority priority) {
             return;
         }
         it = match;
+    }
+
+    try {
+        validationConfig_.validatePriority(priority);
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("setDefaultPriority failed: ") + ex.what());
+        return;
     }
 
     it->second.defaultPriority = priority;

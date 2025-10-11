@@ -1,31 +1,37 @@
 #include "ValidationConfig.hpp"
-
 #include <limits>
 #include <stdexcept>
 #include <string>
 
 using namespace std;
 
-namespace {
-constexpr uint8_t DEVICE_ID_BITS = 16;
-constexpr uint8_t CONNECTION_ID_BITS = 16;
-constexpr uint8_t MESSAGE_ID_BITS = 24;
-constexpr uint8_t PACKAGE_ID_BITS = 24;
-constexpr uint8_t FRAGMENT_ID_BITS = 8;
-constexpr uint8_t FRAGMENTS_COUNT_BITS = 8;
-constexpr uint8_t PRIORITY_BITS = 4;
-constexpr uint8_t SPECIAL_CODE_BITS = 16;
+ValidationConfig::ValidationConfig(
+    uint8_t deviceIdBits,
+    uint8_t connectionIdBits,
+    uint8_t messageIdBits,
+    uint8_t packageIdBits,
+    uint8_t fragmentIdBits,
+    uint8_t fragmentsCountBits,
+    uint8_t priorityBits,
+    uint8_t specialCodeBits
+)
+    : deviceIdBits_(deviceIdBits)
+    , connectionIdBits_(connectionIdBits)
+    , messageIdBits_(messageIdBits)
+    , packageIdBits_(packageIdBits)
+    , fragmentIdBits_(fragmentIdBits)
+    , fragmentsCountBits_(fragmentsCountBits)
+    , priorityBits_(priorityBits)
+    , specialCodeBits_(specialCodeBits) {
+    validateBits(deviceIdBits_);
+    validateBits(connectionIdBits_);
+    validateBits(messageIdBits_);
+    validateBits(packageIdBits_);
+    validateBits(fragmentIdBits_);
+    validateBits(fragmentsCountBits_);
+    validateBits(priorityBits_);
+    validateBits(specialCodeBits_);
 }
-
-ValidationConfig::ValidationConfig()
-    : deviceIdBits_(DEVICE_ID_BITS)
-    , connectionIdBits_(CONNECTION_ID_BITS)
-    , messageIdBits_(MESSAGE_ID_BITS)
-    , packageIdBits_(PACKAGE_ID_BITS)
-    , fragmentIdBits_(FRAGMENT_ID_BITS)
-    , fragmentsCountBits_(FRAGMENTS_COUNT_BITS)
-    , priorityBits_(PRIORITY_BITS)
-    , specialCodeBits_(SPECIAL_CODE_BITS) {}
 
 bool ValidationConfig::validateMessage(const Message& message) const {
     if (message.id < 0 || !fitsInBits(message.id, messageIdBits_)) {
@@ -62,6 +68,48 @@ bool ValidationConfig::validatePackage(const Package& package) const {
     return true;
 }
 
+bool ValidationConfig::validateDeviceId(DeviceId deviceId) const {
+    if (deviceId <= 0 || !fitsInBits(deviceId, deviceIdBits_)) {
+        throw invalid_argument("Device id exceeds allowed bit width");
+    }
+    return true;
+}
+
+bool ValidationConfig::validateConnectionId(ConnectionId connectionId) const {
+    if (connectionId <= 0 || !fitsInBits(connectionId, connectionIdBits_)) {
+        throw invalid_argument("Connection id exceeds allowed bit width");
+    }
+    return true;
+}
+
+bool ValidationConfig::validateMessageId(MessageId messageId) const {
+    if (messageId <= 0 || !fitsInBits(messageId, messageIdBits_)) {
+        throw invalid_argument("Message id exceeds allowed bit width");
+    }
+    return true;
+}
+
+bool ValidationConfig::validatePackageId(PackageId packageId) const {
+    if (packageId <= 0 || !fitsInBits(packageId, packageIdBits_)) {
+        throw invalid_argument("Package id exceeds allowed bit width");
+    }
+    return true;
+}
+
+bool ValidationConfig::validatePriority(Priority priority) const {
+    if (priority < 0 || !fitsInBits(priority, priorityBits_)) {
+        throw invalid_argument("Priority exceeds allowed bit width");
+    }
+    return true;
+}
+
+bool ValidationConfig::validateSpecialCode(int specialCode) const {
+    if (specialCode < 0 || !fitsInBits(specialCode, specialCodeBits_)) {
+        throw invalid_argument("Special code exceeds allowed bit width");
+    }
+    return true;
+}
+
 bool ValidationConfig::fitsInBits(int value, uint8_t bits) const {
     if (bits == 0 || bits > 32) {
         throw invalid_argument("ValidationConfig: number of bits must be between 1 and 32");
@@ -71,4 +119,10 @@ bool ValidationConfig::fitsInBits(int value, uint8_t bits) const {
     }
     const uint64_t maxValue = (bits == 32) ? numeric_limits<uint32_t>::max() : ((1ULL << bits) - 1ULL);
     return static_cast<uint64_t>(value) <= maxValue;
+}
+
+void ValidationConfig::validateBits(uint8_t bits) const {
+    if (bits == 0 || bits > 32) {
+        throw invalid_argument("ValidationConfig: number of bits must be between 1 and 32");
+    }
 }

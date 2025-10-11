@@ -9,6 +9,7 @@
 #include <vector>
 #include <commonTypes.hpp>
 #include <logging.hpp>
+#include <ValidationConfig.hpp>
 
 using namespace std;
 
@@ -17,7 +18,10 @@ class CodingModule;
 class PhysicalLayerUdp : public LoggerBase {
 public:
     static constexpr size_t FRAME_SIZE = 256;
-    PhysicalLayerUdp(int localPort, const string& remoteHost, int remotePort, queue<Frame>& outgoingFramesFromCodingModule, CodingModule& codingModule);
+    PhysicalLayerUdp(int localPort, const string& remoteHost, int remotePort,
+                     queue<Frame>& outgoingFramesFromCodingModule,
+                     CodingModule& codingModule,
+                     const ValidationConfig& validationConfig);
     ~PhysicalLayerUdp();
 
     void tick();
@@ -33,9 +37,14 @@ private:
     sockaddr_in localAddr_{};
     queue<Frame>& outgoingFramesFromCodingModule_;
     CodingModule& codingModule_;
+    const ValidationConfig& validationConfig_;
+    size_t maxEncodedFrameBytes_{};
     queue<Frame> incomingFrames_;
     thread worker_;
     atomic<bool> stopWorker_{false};
-    void padFrame(Frame& frame);
-    void unpadFrame(Frame& frame);
+    void padFrame(Frame& frame) const;
+    void unpadFrame(Frame& frame) const;
+    void initializeConstraints();
+    void ensureCanSend(const Frame& frame) const;
+    void ensureCanReceive(const Frame& frame) const;
 };

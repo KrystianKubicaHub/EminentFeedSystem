@@ -18,10 +18,20 @@ add_library(common_utils
 target_include_directories(common_utils PUBLIC
     common
 )
+
+add_library(validation_module
+    Validation_Module/src/ValidationConfig.cpp
+)
+
+target_include_directories(validation_module PUBLIC
+    Validation_Module/include
+    common
+)
 include_directories(${CMAKE_SOURCE_DIR}/common)
 include_directories(${CMAKE_SOURCE_DIR}/Sdk/include)
 include_directories(${CMAKE_SOURCE_DIR}/Transport_Layer/include)
 include_directories(${CMAKE_SOURCE_DIR}/Coding_Module/include)
+include_directories(${CMAKE_SOURCE_DIR}/Validation_Module/include)
 
 cmake_minimum_required(VERSION 3.10)
 project(eminent_feed_system LANGUAGES CXX)
@@ -39,10 +49,12 @@ target_include_directories(eminent_sdk PUBLIC
     Transport_Layer/include
     Physical_Layer/include
     Coding_Module/include
+    Validation_Module/include
     common
 )
 
 target_link_libraries(eminent_sdk PUBLIC common_utils)
+target_link_libraries(eminent_sdk PUBLIC validation_module)
 
 add_library(session_manager
     Session_Manager/src/SessionManager.cpp
@@ -91,6 +103,7 @@ target_link_libraries(eminent_demo
     physical_layer
     CodingModule
     common_utils
+    validation_module
 )
 
 target_include_directories(eminent_demo PRIVATE
@@ -98,6 +111,7 @@ target_include_directories(eminent_demo PRIVATE
     Session_Manager/include
     Transport_Layer/include
     Physical_Layer/include
+    Validation_Module/include
 )
 
 add_executable(test_stabilnosci_2_synchroniczny
@@ -111,6 +125,7 @@ target_link_libraries(test_stabilnosci_2_synchroniczny
     physical_layer
     CodingModule
     common_utils
+    validation_module
 )
 
 target_include_directories(test_stabilnosci_2_synchroniczny PRIVATE
@@ -118,4 +133,5 @@ target_include_directories(test_stabilnosci_2_synchroniczny PRIVATE
     Session_Manager/include
     Transport_Layer/include
     Physical_Layer/include
+    Validation_Module/include
 )

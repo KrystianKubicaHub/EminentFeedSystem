@@ -7,6 +7,7 @@
 #include <optional>
 #include <commonTypes.hpp>
 #include <logging.hpp>
+#include <ValidationConfig.hpp>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -17,7 +18,7 @@ class EminentSdk;
 
 class SessionManager : public LoggerBase {
 public:
-    SessionManager(queue<Message>& sdkQueue, EminentSdk& sdk, size_t maxPacketSize = 256);
+    SessionManager(queue<Message>& sdkQueue, EminentSdk& sdk, const ValidationConfig& validationConfig, size_t maxPacketSize = 256);
 
     void processMessages();
 
@@ -35,9 +36,15 @@ private:
 
     queue<Message>& sdkQueue_;
     EminentSdk& sdk_;
+    const ValidationConfig& validationConfig_;
     size_t maxPacketSize_;
     PackageId nextPackageId_ = 1;
-    MessageId nextAckMessageId_ = -1;
+    MessageId nextAckMessageId_ = 0;
+    uint64_t maxPackageIdValue_ = 0;
+    uint64_t maxMessageIdValue_ = 0;
+    uint64_t maxFragmentIdValue_ = 0;
+    uint64_t maxFragmentsCountValue_ = 0;
+    uint64_t maxPriorityValue_ = 0;
     queue<Package> outgoingPackages_;
     unordered_map<MessageId, PendingMessageInfo> pendingMessages_;
     unordered_map<MessageId, vector<Package>> receivedPackages_;
@@ -55,6 +62,10 @@ private:
     void sendAckForPackageLocked(const Package& pkg);
     void handleAckPackage(const Package& pkg);
     optional<PackageId> parseAckPayload(const string& payload) const;
+    PackageId allocatePackageId();
+    MessageId allocateAckMessageId();
+    uint64_t maxValueForBits(uint8_t bits) const;
+    bool ensureFragmentsFit(int total) const;
 public:
     bool getNextPackage(Package& out);
     void receivePackage(const Package& pkg);

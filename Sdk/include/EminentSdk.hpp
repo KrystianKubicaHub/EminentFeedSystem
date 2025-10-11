@@ -8,6 +8,7 @@
 #include <vector>
 #include <commonTypes.hpp>
 #include <logging.hpp>
+#include <ValidationConfig.hpp>
 #include "SessionManager.hpp"
 #include "TransportLayer.hpp"
 #include "PhysicalLayer.hpp"
@@ -18,6 +19,7 @@ using namespace std;
 class EminentSdk : public LoggerBase {
 public:
     EminentSdk(int localPort, const string& remoteHost, int remotePort, LogLevel logLevel = LogLevel::NONE);
+    EminentSdk(int localPort, const string& remoteHost, int remotePort, const ValidationConfig& validationConfig, LogLevel logLevel = LogLevel::NONE);
 
     void initialize(
         DeviceId selfId,
@@ -62,9 +64,11 @@ public:
 
 private:
     DeviceId deviceId_;
-    int nextConnectionId_ = 2;
-    int nextPrime();
-    int nextMsgId_ = 1;
+    ConnectionId nextConnectionId_ = 2;
+    MessageId nextMsgId_ = 1;
+    MessageId nextMessageId();
+    ConnectionId nextPrime();
+    int generateSpecialCode();
 
     bool initialized_ = false;
     function<bool(DeviceId, const string& payload)> onIncomingConnectionDecision_;
@@ -72,6 +76,7 @@ private:
     unordered_map<int, Connection> connections_;
     queue<Message> outgoingQueue_;
 
+    ValidationConfig validationConfig_;
     SessionManager sessionManager_;
     TransportLayer transportLayer_;
     CodingModule codingModule_;
