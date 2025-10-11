@@ -80,3 +80,22 @@ target_include_directories(eminent_demo PRIVATE
     transport_layer/include
     physical_layer/include
 )
+
+add_executable(test_stabilnosci_2_synchroniczny
+    app/test_stabilnosci_2_synchroniczny.cpp
+)
+
+target_link_libraries(test_stabilnosci_2_synchroniczny
+    eminent_sdk
+    session_manager
+    transport_layer
+    physical_layer
+    CodingModule
+)
+
+target_include_directories(test_stabilnosci_2_synchroniczny PRIVATE
+    sdk/include
+    session_manager/include
+    transport_layer/include
+    physical_layer/include
+)

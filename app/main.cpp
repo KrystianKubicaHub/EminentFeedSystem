@@ -96,8 +96,7 @@ int main() {
     sdkA.complexConsoleInfo("SDK A");
     sdkB.complexConsoleInfo("SDK B");
 
-    /// teraz tutaj chcieli byśmy dodać wysłanie wiadomości z A do B
-    /// oraz z B do A
+    
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     if (finalConnA != -1) {
@@ -107,7 +106,7 @@ int main() {
                 "{\"text\": \"Pozdrowienia od A dla B\", \"from\": 1001}",
                 MessageFormat::JSON,
                 6,
-                false,
+                true,
                 []() { std::cout << "sdkA: message delivered callback" << std::endl; }
             );
         } catch (const std::exception& ex) {
@@ -124,7 +123,7 @@ int main() {
                 "{\"text\": \"Pozdrowienia od B dla A\", \"from\": 2002}",
                 MessageFormat::JSON,
                 4,
-                false,
+                true,
                 []() { std::cout << "sdkB: message delivered callback" << std::endl; }
             );
         } catch (const std::exception& ex) {

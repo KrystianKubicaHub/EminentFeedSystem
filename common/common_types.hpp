@@ -34,7 +34,8 @@ using Priority = int;
 enum class MessageFormat {
     JSON,
     VIDEO,
-    HANDSHAKE
+    HANDSHAKE,
+    CONFIRMATION
 };
 
 enum class PackageStatus {
