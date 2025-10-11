@@ -8,7 +8,7 @@
 
 using namespace std;
 
-atomic<int> LoggerConfig::levelValue_{static_cast<int>(LogLevel::INFO)};
+atomic<int> LoggerConfig::levelValue_{static_cast<int>(LogLevel::NONE)};
 atomic<long long> LoggerConfig::throttleDurationMs_{0};
 
 void LoggerConfig::setLevel(LogLevel level) {
@@ -109,6 +109,8 @@ string LoggerBase::levelToString(LogLevel level) {
             return "WARN";
         case LogLevel::ERROR:
             return "ERROR";
+        case LogLevel::NONE:
+            return "NONE";
         default:
             return "INFO";
     }

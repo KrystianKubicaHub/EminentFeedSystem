@@ -1,4 +1,4 @@
-#include "eminent_sdk.hpp"
+#include "EminentSdk.hpp"
 #include <atomic>
 #include <chrono>
 #include <cctype>

@@ -4,7 +4,12 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "${workspaceFolder}/transport_layer/include"
+                "${workspaceFolder}/Coding_Module/include",
+                "${workspaceFolder}/Physical_Layer/include",
+                "${workspaceFolder}/Transport_Layer/include",
+                "${workspaceFolder}/Session_Manager/include",
+                "${workspaceFolder}/Sdk/include",
+                "${workspaceFolder}/common"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

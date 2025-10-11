@@ -1,11 +1,11 @@
-include_directories(${CMAKE_SOURCE_DIR}/physical_layer/include)
+include_directories(${CMAKE_SOURCE_DIR}/Physical_Layer/include)
 add_library(CodingModule
-    CodingModule/src/CodingModule.cpp
+    Coding_Module/src/CodingModule.cpp
 )
 
 target_include_directories(CodingModule PUBLIC
-    CodingModule/include
-    transport_layer/include
+    Coding_Module/include
+    Transport_Layer/include
     common
 )
 
@@ -19,9 +19,9 @@ target_include_directories(common_utils PUBLIC
     common
 )
 include_directories(${CMAKE_SOURCE_DIR}/common)
-include_directories(${CMAKE_SOURCE_DIR}/sdk/include)
-include_directories(${CMAKE_SOURCE_DIR}/transport_layer/include)
-include_directories(${CMAKE_SOURCE_DIR}/CodingModule/include)
+include_directories(${CMAKE_SOURCE_DIR}/Sdk/include)
+include_directories(${CMAKE_SOURCE_DIR}/Transport_Layer/include)
+include_directories(${CMAKE_SOURCE_DIR}/Coding_Module/include)
 
 cmake_minimum_required(VERSION 3.10)
 project(eminent_feed_system LANGUAGES CXX)
@@ -30,38 +30,38 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(eminent_sdk
-    sdk/src/eminent_sdk.cpp
+    Sdk/src/EminentSdk.cpp
 )
 
 target_include_directories(eminent_sdk PUBLIC
-    sdk/include
-    session_manager/include
-    transport_layer/include
-    physical_layer/include
-    CodingModule/include
+    Sdk/include
+    Session_Manager/include
+    Transport_Layer/include
+    Physical_Layer/include
+    Coding_Module/include
     common
 )
 
 target_link_libraries(eminent_sdk PUBLIC common_utils)
 
 add_library(session_manager
-    session_manager/src/session_manager.cpp
+    Session_Manager/src/SessionManager.cpp
 )
 
 target_include_directories(session_manager PUBLIC
-    session_manager/include
+    Session_Manager/include
 )
 
 target_link_libraries(session_manager PUBLIC common_utils)
 
 
 add_library(transport_layer
-    transport_layer/src/transport_layer.cpp
+    Transport_Layer/src/TransportLayer.cpp
 )
 
 target_include_directories(transport_layer PUBLIC
-    transport_layer/include
-    session_manager/include
+    Transport_Layer/include
+    Session_Manager/include
 )
 
 target_link_libraries(transport_layer PUBLIC common_utils)
@@ -69,11 +69,11 @@ target_link_libraries(transport_layer PUBLIC common_utils)
 
 
 add_library(physical_layer
-    physical_layer/src/physical_layer.cpp
+    Physical_Layer/src/PhysicalLayer.cpp
 )
 
 target_include_directories(physical_layer PUBLIC
-    physical_layer/include
+    Physical_Layer/include
 )
 
 target_link_libraries(physical_layer PUBLIC common_utils)
@@ -94,10 +94,10 @@ target_link_libraries(eminent_demo
 )
 
 target_include_directories(eminent_demo PRIVATE
-    sdk/include
-    session_manager/include
-    transport_layer/include
-    physical_layer/include
+    Sdk/include
+    Session_Manager/include
+    Transport_Layer/include
+    Physical_Layer/include
 )
 
 add_executable(test_stabilnosci_2_synchroniczny
@@ -114,8 +114,8 @@ target_link_libraries(test_stabilnosci_2_synchroniczny
 )
 
 target_include_directories(test_stabilnosci_2_synchroniczny PRIVATE
-    sdk/include
-    session_manager/include
-    transport_layer/include
-    physical_layer/include
+    Sdk/include
+    Session_Manager/include
+    Transport_Layer/include
+    Physical_Layer/include
 )
