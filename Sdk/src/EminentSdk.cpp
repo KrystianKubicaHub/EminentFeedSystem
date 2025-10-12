@@ -1,8 +1,12 @@
 #include "EminentSdk.hpp"
 
+#include "AbstractPhysicalLayer.hpp"
+#include "PhysicalLayerUdp.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -10,20 +14,41 @@
 
 using namespace std;
 
+EminentSdk::EminentSdk(unique_ptr<AbstractPhysicalLayer> physicalLayer,
+                       const ValidationConfig& validationConfig,
+                       LogLevel logLevel)
+    : LoggerBase("EminentSdk"),
+      validationConfig_(validationConfig),
+            sessionManager_(outgoingQueue_, *this, validationConfig_, validationConfig_.maxPayloadLengthBytes()),
+      transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_, validationConfig_),
+      codingModule_(transportLayer_.getOutgoingFrames(), transportLayer_, validationConfig_),
+      physicalLayer_(std::move(physicalLayer)),
+      localPort_(0),
+      remoteHost_(),
+      remotePort_(0) {
+    if (!physicalLayer_) {
+        throw invalid_argument("physicalLayer must not be null");
+    }
+    if (auto* udpLayer = dynamic_cast<PhysicalLayerUdp*>(physicalLayer_.get())) {
+        localPort_ = udpLayer->localPort();
+        remoteHost_ = udpLayer->remoteHost();
+        remotePort_ = udpLayer->remotePort();
+    }
+    LoggerConfig::setLevel(logLevel);
+    physicalLayer_->configure(codingModule_.getOutgoingFrames(), codingModule_, validationConfig_);
+    physicalLayer_->start();
+}
+
 EminentSdk::EminentSdk(int localPort, const string& remoteHost, int remotePort, LogLevel logLevel)
     : EminentSdk(localPort, remoteHost, remotePort, ValidationConfig{}, logLevel) {}
 
 EminentSdk::EminentSdk(int localPort, const string& remoteHost, int remotePort, const ValidationConfig& validationConfig, LogLevel logLevel)
-    : LoggerBase("EminentSdk"),
-    validationConfig_(validationConfig),
-        sessionManager_(outgoingQueue_, *this, validationConfig_),
-            transportLayer_(sessionManager_.getOutgoingPackages(), sessionManager_, validationConfig_),
-            codingModule_(transportLayer_.getOutgoingFrames(), transportLayer_, validationConfig_),
-    physicalLayer_(localPort, remoteHost, remotePort, codingModule_.getOutgoingFrames(), codingModule_, validationConfig_),
-      localPort_(localPort),
-      remoteHost_(remoteHost),
-      remotePort_(remotePort) {
-    LoggerConfig::setLevel(logLevel);
+    : EminentSdk(make_unique<PhysicalLayerUdp>(localPort, remoteHost, remotePort),
+                 validationConfig,
+                 logLevel) {
+    localPort_ = localPort;
+    remoteHost_ = remoteHost;
+    remotePort_ = remotePort;
 }
 
 

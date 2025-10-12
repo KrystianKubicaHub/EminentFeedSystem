@@ -1,479 +1,387 @@
-#include "EminentSdk.hpp"
-#include <atomic>
-#include <chrono>
-#include <cctype>
-#include <iostream>
-#include <mutex>
-#include <optional>
-#include <random>
-#include <string>
-#include <thread>
-#include <unordered_map>
-#include <vector>
+// Test stabilności numer 2 uruchamiamy w wariancie synchronicznym na warstwie fizycznej w pamięci.
+// Ten plik zawiera kompletną symulację wielourządzeniowej sieci SDK, dlatego całą logikę dokumentujemy
+// bardzo dokładnie w komentarzach – krok po kroku, linijka po linijce.
+
+#include "EminentSdk.hpp"          // Główna klasa SDK – zarządza sesjami, transportem i kodowaniem ramek.
+#include "PhysicalLayerInMemory.hpp" // Warstwa fizyczna oparta na wspólnej pamięci (bez UDP), używana w teście.
+#include "ValidationConfig.hpp"    // Zestaw reguł weryfikujących poprawność identyfikatorów i parametrów.
+
+// Standardowe nagłówki C++ wykorzystywane przez test (omówione przy pierwszym użyciu w kodzie).
+#include <atomic>          // std::atomic – bezpieczne współdzielenie flag pomiędzy wątkami.
+#include <chrono>          // std::chrono – pomiar czasu i limity oczekiwania.
+#include <cctype>          // std::isdigit / std::isspace – parsowanie indeksów z payloadów JSON.
+#include <iostream>        // std::cout / std::cerr – raportowanie postępu testu.
+#include <memory>          // std::unique_ptr / std::make_unique – zarządzanie obiektami SDK i warstwy fizycznej.
+#include <mutex>           // std::mutex / std::lock_guard – ochrona map połączeń.
+#include <optional>        // std::optional – bezpieczne zwracanie "może istnieć" / "nie istnieje".
+#include <random>          // std::random_device / std::mt19937 – losowanie nadawców, odbiorców i treści.
+#include <string>          // std::string – przechowywanie payloadów oraz logów.
+#include <thread>          // std::this_thread::sleep_for – aktywne oczekiwanie na zdarzenia.
+#include <unordered_map>   // std::unordered_map – skojarzenie remoteId -> connectionId.
+#include <vector>          // std::vector – przechowywanie kontekstów urządzeń oraz rekordów wiadomości.
+
+using namespace std;
 
 namespace {
+// ---- Stałe konfiguracyjne testu ----
+constexpr int kDeviceCount = 4;                  // Liczba instancji SDK, które symulujemy jednocześnie.
+constexpr int kMessageCount = 20;               // Łączna liczba wiadomości wysyłanych w losowych parach.
+constexpr int kMaxPayloadLength = 2100;           // Maksymalna długość losowanego tekstu w polu "text" JSON-a.
+constexpr Priority kDefaultPriority = 5;         // Wspólny priorytet domyślny wiadomości i połączeń.
+constexpr chrono::milliseconds kPollingInterval{200}; // Odstęp pomiędzy kolejnymi próbami sprawdzania warunków.
+constexpr chrono::seconds kInitTimeout{50};       // Limit czasu na inicjalizację wszystkich urządzeń.
+constexpr chrono::seconds kConnectTimeout{300};   // Limit czasu na zestawienie pojedynczego połączenia on-demand.
+constexpr chrono::seconds kDeliveryTimeout{200};  // Limit czasu na dostarczenie wszystkich wiadomości.
 
-constexpr int kMessageCountPerDirection = 200;
-constexpr int kMaxMessageLength = 64;
-constexpr int kDefaultPriorityA = 6;
-constexpr int kDefaultPriorityB = 4;
-constexpr int kMaxDebugRecords = 10;
-
-struct DecodedPayload {
-    std::string from;
-    std::string text;
-    int index = -1;
+struct MessageRecord {
+    DeviceId senderId = -1;   // Identyfikator urządzenia nadającego.
+    DeviceId receiverId = -1; // Identyfikator urządzenia odbierającego.
+    string payload;           // Treść wiadomości JSON (zawiera index + tekst).
+    atomic<bool> delivered{false}; // Callback dostarczenia (warstwa transportowa) ustawia na true.
+    atomic<bool> received{false};  // Handler odbiorcy ustawia na true, gdy wiadomość dotrze do SDK.
 };
 
-struct ExpectedMessage {
-    std::string payload;
-    std::string text;
+struct DeviceContext {
+    DeviceId id;                                 // Własny identyfikator urządzenia (3000 + indeks).
+    unique_ptr<EminentSdk> sdk;                  // Wskaźnik na instancję SDK obsługującą urządzenie.
+    unordered_map<DeviceId, ConnectionId> connections; // Odwzorowanie: remoteId -> connectionId (aktywny kanał).
+    mutable mutex connectionsMutex;              // Blokada chroniąca mapę połączeń przed wyścigami.
+    atomic<bool> initialized{false};             // Flaga informująca, że initialize() zakończyło się sukcesem.
 };
 
-struct UnexpectedRecord {
-    int index;
-    std::string payload;
-};
-
-struct MismatchRecord {
-    int index;
-    std::string expectedText;
-    std::string receivedText;
-};
-
-struct DirectionState {
-    std::unordered_map<int, ExpectedMessage> expectedMessages;
-    std::vector<UnexpectedRecord> unexpectedMessages;
-    std::vector<MismatchRecord> mismatchedMessages;
-    int unexpectedTotal = 0;
-    int mismatchedTotal = 0;
-    int parseFailures = 0;
-};
-
-std::string generateRandomString(std::mt19937& engine,
-                                 std::uniform_int_distribution<int>& lengthDist,
-                                 const std::string& alphabet,
-                                 std::uniform_int_distribution<int>& charDist) {
-    const int len = lengthDist(engine);
-    std::string result;
-    result.reserve(static_cast<size_t>(len));
-    for (int i = 0; i < len; ++i) {
-        result.push_back(alphabet[static_cast<size_t>(charDist(engine))]);
+string generateRandomString(mt19937& engine,
+                            uniform_int_distribution<int>& lengthDist,
+                            const string& alphabet,
+                            uniform_int_distribution<int>& charDist) {
+    const int len = lengthDist(engine);              // Losujemy docelową długość tekstu.
+    string result;                                   // Bufor na wynik.
+    result.reserve(static_cast<size_t>(len));        // Minimalizujemy realokacje rezerwując miejsce.
+    for (int i = 0; i < len; ++i) {                  // Generujemy każdy znak osobno...
+        result.push_back(alphabet[static_cast<size_t>(charDist(engine))]); // ...korzystając z rozkładu jednolitego.
     }
-    return result;
+    return result;                                   // Zwracamy wygenerowany ciąg.
 }
 
-std::string buildJsonPayload(const std::string& from,
-                             const std::string& randomText,
-                             int index) {
-    std::string payload = "{\"from\":\"";
-    payload += from;
-    payload += "\",\"text\":\"";
-    payload += randomText;
-    payload += "\",\"index\":";
-    payload += std::to_string(index);
-    payload += "}";
-    return payload;
+string buildJsonPayload(DeviceId from, int index, const string& text) {
+    string payload = "{\"from\":\"";          // Składamy JSON-a ręcznie, aby uniknąć dodatkowych zależności.
+    payload += to_string(from);                     // Pole "from" – identyfikator nadawcy.
+    payload += "\",\"text\":\"";             // Zakładka dla pola tekstowego.
+    payload += text;                                // Właściwa losowa treść.
+    payload += "\",\"index\":";              // Pole "index" – numer wiadomości.
+    payload += to_string(index);                    // Wstawiamy indeks.
+    payload += "}";                                // Domykamy obiekt JSON.
+    return payload;                                 // Zwracamy gotowy string.
 }
 
-std::optional<std::string> extractStringField(const std::string& json, const std::string& key) {
-    const std::string token = "\"" + key + "\"";
-    size_t keyPos = json.find(token);
-    if (keyPos == std::string::npos) {
-        return std::nullopt;
+optional<int> extractIndex(const string& payload) {
+    const string token = "\"index\":";                // Szukamy substringa identyfikującego pole "index".
+    size_t pos = payload.find(token);                      // Pozycja startowa pola.
+    if (pos == string::npos) {                             // Jeśli brak pola – zwracamy brak wartości.
+        return nullopt;
     }
-    size_t colon = json.find(":", keyPos + token.size());
-    if (colon == std::string::npos) {
-        return std::nullopt;
+    pos += token.size();                                   // Przeskakujemy za nazwę pola.
+    while (pos < payload.size() && isspace(static_cast<unsigned char>(payload[pos]))) {
+        ++pos;                                             // Pomijamy spacje / tabulatory.
     }
-    size_t valueStart = colon + 1;
-    while (valueStart < json.size() && std::isspace(static_cast<unsigned char>(json[valueStart]))) {
-        ++valueStart;
+    size_t end = pos;                                      // Koniec fragmentu liczbowego.
+    while (end < payload.size() && isdigit(static_cast<unsigned char>(payload[end]))) {
+        ++end;                                             // Zbieramy kolejne cyfry.
     }
-    if (valueStart >= json.size() || json[valueStart] != '"') {
-        return std::nullopt;
+    if (end == pos) {                                     // Jeżeli brak cyfr – niepoprawny format.
+        return nullopt;
     }
-    ++valueStart;
-    std::string result;
-    bool escape = false;
-    for (size_t i = valueStart; i < json.size(); ++i) {
-        char c = json[i];
-        if (escape) {
-            result.push_back(c);
-            escape = false;
-        } else if (c == '\\') {
-            escape = true;
-        } else if (c == '"') {
-            return result;
-        } else {
-            result.push_back(c);
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<int> extractIntField(const std::string& json, const std::string& key) {
-    const std::string token = "\"" + key + "\"";
-    size_t keyPos = json.find(token);
-    if (keyPos == std::string::npos) {
-        return std::nullopt;
-    }
-    size_t colon = json.find(":", keyPos + token.size());
-    if (colon == std::string::npos) {
-        return std::nullopt;
-    }
-    size_t valueStart = colon + 1;
-    while (valueStart < json.size() && std::isspace(static_cast<unsigned char>(json[valueStart]))) {
-        ++valueStart;
-    }
-    if (valueStart >= json.size()) {
-        return std::nullopt;
-    }
-    bool negative = false;
-    if (json[valueStart] == '-') {
-        negative = true;
-        ++valueStart;
-    }
-    if (valueStart >= json.size() || !std::isdigit(static_cast<unsigned char>(json[valueStart]))) {
-        return std::nullopt;
-    }
-    size_t valueEnd = valueStart;
-    while (valueEnd < json.size() && std::isdigit(static_cast<unsigned char>(json[valueEnd]))) {
-        ++valueEnd;
-    }
-    std::string numberStr = json.substr(valueStart, valueEnd - valueStart);
     try {
-        int value = std::stoi(numberStr);
-        return negative ? -value : value;
+        return stoi(payload.substr(pos, end - pos));       // Konwertujemy substring na liczbę całkowitą.
     } catch (...) {
-        return std::nullopt;
+        return nullopt;                                    // W razie błędu konwersji – brak wartości.
     }
 }
 
-std::optional<DecodedPayload> decodePayload(const std::string& json) {
-    auto from = extractStringField(json, "from");
-    auto text = extractStringField(json, "text");
-    auto index = extractIntField(json, "index");
-    if (!text.has_value() || !index.has_value()) {
-        return std::nullopt;
-    }
-    DecodedPayload decoded;
-    decoded.from = from.value_or("");
-    decoded.text = *text;
-    decoded.index = *index;
-    return decoded;
+void noteConnection(DeviceContext& ctx, DeviceId remoteId, ConnectionId connectionId) {
+    lock_guard<mutex> lock(ctx.connectionsMutex);          // Chronimy mapę połączeń.
+    ctx.connections[remoteId] = connectionId;              // Zapamiętujemy identyfikator aktywnego kanału.
 }
 
-void verifyMessage(const std::string& payload,
-                   DirectionState& state,
-                   std::mutex& mtx,
-                   std::atomic<int>& correct,
-                   std::atomic<int>& incorrect) {
-    auto decoded = decodePayload(payload);
-    if (!decoded.has_value()) {
-        ++incorrect;
-        std::lock_guard<std::mutex> lock(mtx);
-        ++state.parseFailures;
-        ++state.unexpectedTotal;
-        if (state.unexpectedMessages.size() < kMaxDebugRecords) {
-            state.unexpectedMessages.push_back({-1, payload});
-        }
-        return;
+optional<ConnectionId> getConnection(const DeviceContext& ctx, DeviceId remoteId) {
+    lock_guard<mutex> lock(ctx.connectionsMutex);          // Dostęp do mapy wymaga blokady (mutable pozwala na lock_guard).
+    auto it = ctx.connections.find(remoteId);              // Szukamy połączenia do danego remoteId.
+    if (it == ctx.connections.end()) {
+        return nullopt;                                    // Jeśli nie istnieje – zwracamy brak.
     }
-
-    std::lock_guard<std::mutex> lock(mtx);
-    auto it = state.expectedMessages.find(decoded->index);
-    if (it == state.expectedMessages.end()) {
-        ++incorrect;
-        ++state.unexpectedTotal;
-        if (state.unexpectedMessages.size() < kMaxDebugRecords) {
-            state.unexpectedMessages.push_back({decoded->index, payload});
-        }
-        return;
-    }
-
-    if (it->second.text == decoded->text) {
-        ++correct;
-    } else {
-        ++incorrect;
-        ++state.mismatchedTotal;
-        if (state.mismatchedMessages.size() < kMaxDebugRecords) {
-            state.mismatchedMessages.push_back({decoded->index, it->second.text, decoded->text});
-        }
-    }
-    state.expectedMessages.erase(it);
-}
-
-void printDebugDetails(const std::string& label,
-                       const DirectionState& state,
-                       int totalExpected) {
-    std::cout << "\n--- Szczegoly debugowe dla kierunku " << label << " ---" << std::endl;
-    std::cout << "  Pozostale oczekiwane: " << state.expectedMessages.size()
-              << " / " << totalExpected << std::endl;
-    if (!state.expectedMessages.empty()) {
-        std::cout << "  Przykladowe brakujace wiadomosci:" << std::endl;
-        int count = 0;
-        for (const auto& entry : state.expectedMessages) {
-            std::cout << "    index=" << entry.first
-                      << ", payload='" << entry.second.payload << "'" << std::endl;
-            if (++count >= kMaxDebugRecords) {
-                break;
-            }
-        }
-    }
-
-    std::cout << "  Liczba niezgodnych: " << state.mismatchedTotal << std::endl;
-    if (!state.mismatchedMessages.empty()) {
-        std::cout << "  Przykladowe niezgodnosci:" << std::endl;
-        for (const auto& mismatch : state.mismatchedMessages) {
-            std::cout << "    index=" << mismatch.index
-                      << ", expected='" << mismatch.expectedText
-                      << "', received='" << mismatch.receivedText << "'" << std::endl;
-        }
-    }
-
-    std::cout << "  Niespodziewane/duplikaty: " << state.unexpectedTotal << std::endl;
-    if (!state.unexpectedMessages.empty()) {
-        std::cout << "  Przykladowe niespodziewane (index=-1 oznacza blad parsowania):" << std::endl;
-        for (const auto& unexpected : state.unexpectedMessages) {
-            std::cout << "    index=" << unexpected.index
-                      << ", payload='" << unexpected.payload << "'" << std::endl;
-        }
-    }
-
-    if (state.parseFailures > 0) {
-        std::cout << "  Nieudane parsowania: " << state.parseFailures << std::endl;
-    }
+    return it->second;                                     // Jeżeli istnieje – zwracamy connectionId.
 }
 
 } // namespace
 
 int main() {
-    std::cout << "[Test] Start - test_stabilnosci_2_synchroniczny" << std::endl;
+    cout << "[StabilityTest] Start - in-memory multicast scenario" << endl; // Nagłówek testu w logach.
 
-    EminentSdk sdkA(8101, "127.0.0.1", 8102);
-    EminentSdk sdkB(8102, "127.0.0.1", 8101);
+    ValidationConfig validationConfig;             // Wspólna konfiguracja walidacji dla wszystkich instancji SDK.
+    auto medium = make_shared<InMemoryMedium>();   // Współdzielone medium pamięciowe – symuluje warstwę fizyczną.
 
-    const DeviceId deviceA = 3001;
-    const DeviceId deviceB = 4002;
+    vector<unique_ptr<DeviceContext>> devices;     // Kontener przechowujący konteksty wszystkich urządzeń.
+    devices.reserve(kDeviceCount);                 // Rezerwujemy pamięć, aby uniknąć dodatkowych alokacji.
 
-    bool initA = false;
-    bool initB = false;
-    ConnectionId connectionIdA = -1;
-    ConnectionId connectionIdB = -1;
+    for (int i = 0; i < kDeviceCount; ++i) {
+        auto context = make_unique<DeviceContext>();                            // Tworzymy nowy kontekst urządzenia.
+        context->id = 3000 + i;                                                // Nadajemy unikalny identyfikator (z zakresu 3000+).
+        auto physicalLayer = make_unique<PhysicalLayerInMemory>(context->id, medium); // Każde urządzenie dostaje własną warstwę fizyczną.
+        context->sdk = make_unique<EminentSdk>(std::move(physicalLayer), validationConfig, LogLevel::ERROR);
+        // Powyżej: przenosimy warstwę fizyczną do konstruktora SDK + ustawiamy niski poziom logowania (ERROR).
+        devices.push_back(std::move(context));                                   // Zachowujemy kontekst w wektorze.
+    }
 
-    std::atomic<bool> onConnectedA{false};
-    std::atomic<bool> onConnectedB{false};
+    vector<MessageRecord> records(static_cast<size_t>(kMessageCount)); // Tablica rekordów – po jednym na każdą wiadomość.
 
-    std::atomic<int> correctToA{0};
-    std::atomic<int> incorrectToA{0};
-    std::atomic<int> correctToB{0};
-    std::atomic<int> incorrectToB{0};
-
-    DirectionState directionAtoB;
-    DirectionState directionBtoA;
-    std::mutex mutexAtoB;
-    std::mutex mutexBtoA;
-
-    sdkA.initialize(
-        deviceA,
-        [&]() {
-            std::cout << "sdkA initialized" << std::endl;
-            initA = true;
-        },
-        [&](const std::string& err) {
-            std::cout << "sdkA initialization failed: " << err << std::endl;
-        },
-        [](DeviceId remoteId, const std::string& payload) {
-            std::cout << "sdkA handshake from " << remoteId << ", payload='" << payload << "' -> ACCEPT" << std::endl;
-            return true;
-        }
-    );
-
-    sdkB.initialize(
-        deviceB,
-        [&]() {
-            std::cout << "sdkB initialized" << std::endl;
-            initB = true;
-        },
-        [&](const std::string& err) {
-            std::cout << "sdkB initialization failed: " << err << std::endl;
-        },
-        [](DeviceId remoteId, const std::string& payload) {
-            std::cout << "sdkB handshake from " << remoteId << ", payload='" << payload << "' -> ACCEPT" << std::endl;
-            return true;
-        },
-        [&](ConnectionId cid, DeviceId remoteId) {
-            connectionIdB = cid;
-            onConnectedB = true;
-            std::cout << "sdkB connected with device " << remoteId << ", connection id " << cid << std::endl;
-            sdkB.setOnMessageHandler(cid, [&](const Message& msg) {
-                verifyMessage(msg.payload, directionAtoB, mutexAtoB, correctToB, incorrectToB);
+    auto registerHandler = [&](DeviceContext& ctx) {
+        return [&](ConnectionId connectionId) {                                  // Zwracamy lambdę konfigurującą handler.
+            ctx.sdk->setOnMessageHandler(connectionId, [&](const Message& msg) { // Przypisujemy callback odbioru wiadomości.
+                auto maybeIndex = extractIndex(msg.payload);                     // Próbujemy wydobyć "index" z JSON-a.
+                if (!maybeIndex) {                                               // Jeśli nie ma indeksu...
+                    cerr << "[WARN] Unable to extract index from payload: " << msg.payload << endl;
+                    return;                                                     // ...kończymy bez oznaczenia odbioru.
+                }
+                int idx = *maybeIndex;                                          // Parsowanie powiodło się – mamy numer wiadomości.
+                if (idx < 0 || idx >= kMessageCount) {                          // Sprawdzamy, czy indeks mieści się w 0..399.
+                    cerr << "[WARN] Received index out of range: " << idx << endl;
+                    return;                                                     // Błędny indeks -> ignorujemy.
+                }
+                records[static_cast<size_t>(idx)].received.store(true, memory_order_relaxed); // Oznaczamy wiadomość jako odebraną.
             });
-        }
-    );
+        };
+    };
 
-    const auto initStart = std::chrono::steady_clock::now();
-    while ((!initA || !initB) && std::chrono::steady_clock::now() - initStart < std::chrono::seconds(5)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    if (!initA || !initB) {
-        std::cout << "Initialization timeout" << std::endl;
-        return 1;
-    }
-
-    sdkA.connect(
-        deviceB,
-        5,
-        [&](ConnectionId cid) {
-            std::cout << "sdkA connect success, connection id: " << cid << std::endl;
-        },
-        [&](const std::string& err) {
-            std::cout << "sdkA connect failed: " << err << std::endl;
-        },
-        [&](const std::string& trouble) {
-            std::cout << "sdkA trouble: " << trouble << std::endl;
-        },
-        [&]() {
-            std::cout << "sdkA disconnected" << std::endl;
-        },
-        [&](ConnectionId cid) {
-            connectionIdA = cid;
-            onConnectedA = true;
-            std::cout << "sdkA onConnected: final connection id " << cid << std::endl;
-            sdkA.setOnMessageHandler(cid, [&](const Message& msg) {
-                verifyMessage(msg.payload, directionBtoA, mutexBtoA, correctToA, incorrectToA);
-            });
-        },
-        [](const Message& msg) {
-            std::cout << "sdkA default handler received message id " << msg.id << std::endl;
-        }
-    );
-
-    const auto connectStart = std::chrono::steady_clock::now();
-    while ((connectionIdA == -1 || connectionIdB == -1) &&
-           std::chrono::steady_clock::now() - connectStart < std::chrono::seconds(10)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    if (connectionIdA == -1 || connectionIdB == -1) {
-        std::cout << "Connection establishment timeout" << std::endl;
-        return 2;
-    }
-
-    sdkA.setDefaultPriority(connectionIdA, kDefaultPriorityA);
-    sdkB.setDefaultPriority(connectionIdB, kDefaultPriorityB);
-
-    std::random_device rd;
-    std::mt19937 engine(rd());
-    std::uniform_int_distribution<int> lengthDist(1, kMaxMessageLength);
-    const std::string alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    std::uniform_int_distribution<int> charDist(0, static_cast<int>(alphabet.size()) - 1);
-
-    int sendFailuresA = 0;
-    int sendFailuresB = 0;
-
-    for (int i = 0; i < kMessageCountPerDirection; ++i) {
-        const std::string randomTextA = generateRandomString(engine, lengthDist, alphabet, charDist);
-        const std::string payloadA = buildJsonPayload(std::to_string(deviceA), randomTextA, i);
-        {
-            std::lock_guard<std::mutex> lock(mutexAtoB);
-            directionAtoB.expectedMessages[i] = {payloadA, randomTextA};
-        }
-        try {
-            sdkA.send(
-                connectionIdA,
-                payloadA,
-                MessageFormat::JSON,
-                kDefaultPriorityA,
-                false,
-                nullptr
-            );
-        } catch (const std::exception& ex) {
-            ++sendFailuresA;
-            std::cout << "sdkA send failed: " << ex.what() << std::endl;
-            std::lock_guard<std::mutex> lock(mutexAtoB);
-            directionAtoB.expectedMessages.erase(i);
+    auto ensureConnection = [&](DeviceContext& senderCtx, DeviceContext& receiverCtx) -> optional<ConnectionId> {
+        if (auto existing = getConnection(senderCtx, receiverCtx.id)) {         // Najpierw sprawdzamy, czy połączenie już istnieje.
+            return existing;                                                    // Jeśli tak – natychmiast zwracamy jego ID.
         }
 
-        const std::string randomTextB = generateRandomString(engine, lengthDist, alphabet, charDist);
-        const std::string payloadB = buildJsonPayload(std::to_string(deviceB), randomTextB, i);
-        {
-            std::lock_guard<std::mutex> lock(mutexBtoA);
-            directionBtoA.expectedMessages[i] = {payloadB, randomTextB};
+        atomic<bool> connected{false};                                          // Flaga ustawiana, gdy callback onConnected się wykona.
+        atomic<bool> failed{false};                                             // Flaga błędu ustawiana przez onFailure.
+        string lastError;                                                       // Wiadomość błędu do diagnostyki.
+
+        auto attachHandler = registerHandler(senderCtx);                        // Przygotowujemy handler wiadomości aktywowany po zestawieniu połączenia.
+
+        senderCtx.sdk->connect(
+            receiverCtx.id,
+            kDefaultPriority,
+            nullptr,                                                            // Nie potrzebujemy osobnego onSuccess (ACK przychodzi asynchronicznie).
+            [&](const string& err) {                                             // onFailure – gdy handshake się nie powiedzie.
+                lastError = err;
+                failed.store(true, memory_order_relaxed);
+                cerr << "  [ERROR] connect failure from " << senderCtx.id << " to "
+                     << receiverCtx.id << ": " << err << endl;
+            },
+            [&](const string& trouble) {                                         // onTrouble – ostrzegamy o problemach podczas połączenia.
+                cerr << "  [WARN] connect trouble on device " << senderCtx.id << ": " << trouble << endl;
+            },
+            [&]() {                                                             // onDisconnected – logujemy zerwanie, aby było widoczne w testach.
+                cerr << "  [WARN] connection dropped on device " << senderCtx.id
+                     << " to " << receiverCtx.id << endl;
+            },
+            [&](ConnectionId cid) {                                              // onConnected – wywoływane, gdy połączenie przechodzi w stan ACTIVE.
+                noteConnection(senderCtx, receiverCtx.id, cid);                  // Zapamiętujemy kanał w mapie.
+                attachHandler(cid);                                              // Dołączamy handler odbioru wiadomości.
+                connected.store(true, memory_order_relaxed);                     // Sygnalizujemy powodzenie.
+                cout << "  [Connect] Device " << senderCtx.id << " active with "
+                     << receiverCtx.id << " (cid=" << cid << ")" << endl;
+            },
+            {}                                                                  // onMessage – niepotrzebny tutaj, handler ustawiamy wyżej.
+        );
+
+        const auto start = chrono::steady_clock::now();                         // Zapamiętujemy chwilę startu oczekiwania.
+        while (chrono::steady_clock::now() - start < kConnectTimeout) {         // Pętla aktywnego oczekiwania z limitem czasu.
+            if (connected.load(memory_order_relaxed)) {                         // Jeśli połączenie się zestawiło...
+                if (auto existing = getConnection(senderCtx, receiverCtx.id)) { // ...pobieramy jego ID i kończymy.
+                    return existing;
+                }
+            }
+            if (failed.load(memory_order_relaxed)) {                            // Jeśli wystąpił błąd – przerywamy.
+                break;
+            }
+            this_thread::sleep_for(kPollingInterval);                           // Krótki sen, aby nie zająć 100% CPU.
         }
-        try {
-            sdkB.send(
-                connectionIdB,
-                payloadB,
-                MessageFormat::JSON,
-                kDefaultPriorityB,
-                false,
-                nullptr
-            );
-        } catch (const std::exception& ex) {
-            ++sendFailuresB;
-            std::cout << "sdkB send failed: " << ex.what() << std::endl;
-            std::lock_guard<std::mutex> lock(mutexBtoA);
-            directionBtoA.expectedMessages.erase(i);
+
+        if (!lastError.empty()) {                                               // Po przekroczeniu limitu czasu raportujemy przyczynę.
+            cerr << "  [ERROR] ensureConnection failed: " << lastError << endl;
+        } else {
+            cerr << "  [ERROR] ensureConnection timeout between " << senderCtx.id
+                 << " and " << receiverCtx.id << endl;
         }
+        return nullopt;                                                         // Brak połączenia – sygnalizujemy niepowodzenie.
+    };
+
+    auto acceptAllConnections = [](DeviceId remoteId, const string& payload) {
+        (void)payload;                                                          // Payload handshaku nas nie interesuje – akceptujemy wszystko.
+        cout << "  [Init] Incoming handshake from device " << remoteId << " -> ACCEPT" << endl;
+        return true;                                                            // Zwracamy true – handshake zostaje zaakceptowany.
+    };
+
+    for (auto& devicePtr : devices) {
+        DeviceContext* ctx = devicePtr.get();                                   // Pobieramy surowy wskaźnik na kontekst urządzenia.
+        auto attachHandler = registerHandler(*ctx);                             // Przygotowujemy funkcję do ustawiania handlerów.
+        ctx->sdk->initialize(
+            ctx->id,                                                            // Identyfikator własny.
+            [ctx]() {                                                           // onSuccess – oznaczamy urządzenie jako gotowe.
+                ctx->initialized.store(true, memory_order_relaxed);
+                cout << "  [Init] Device " << ctx->id << " initialized" << endl;
+            },
+            [ctx](const string& err) {                                          // onFailure – wypisujemy błąd inicjalizacji.
+                cerr << "  [ERROR] Initialization failed for device " << ctx->id << ": " << err << endl;
+            },
+            acceptAllConnections,                                               // Decyzja o przychodzących handshake'ach – zawsze true.
+            [ctx, attachHandler](ConnectionId connectionId, DeviceId remoteId) { // onConnectionEstablished – handshake przychodzący.
+                noteConnection(*ctx, remoteId, connectionId);                   // Dodajemy nowe połączenie do mapy.
+                attachHandler(connectionId);                                    // Podpinamy handler odbiorczy.
+                cout << "  [Init] Device " << ctx->id << " established connection with " << remoteId
+                     << " (cid=" << connectionId << ")" << endl;
+            }
+        );
     }
 
-    const auto waitStart = std::chrono::steady_clock::now();
-    const auto maxWait = std::chrono::seconds(5);
-    while (std::chrono::steady_clock::now() - waitStart < maxWait) {
-        bool pendingAtoB = false;
-        bool pendingBtoA = false;
-        {
-            std::lock_guard<std::mutex> lock(mutexAtoB);
-            pendingAtoB = !directionAtoB.expectedMessages.empty();
+    const auto initStart = chrono::steady_clock::now();                         // Start odliczania czasu inicjalizacji.
+    while (true) {
+        bool allInitialized = true;                                             // Zakładamy sukces, dopóki nie wykryjemy inaczej.
+        for (const auto& devicePtr : devices) {
+            if (!devicePtr->initialized.load(memory_order_relaxed)) {
+                allInitialized = false;                                         // Jakiekolwiek urządzenie wciąż niegotowe -> kontynuujemy.
+                break;
+            }
         }
-        {
-            std::lock_guard<std::mutex> lock(mutexBtoA);
-            pendingBtoA = !directionBtoA.expectedMessages.empty();
-        }
-        if (!pendingAtoB && !pendingBtoA) {
+        if (allInitialized) {                                                   // Wszystkie urządzenia gotowe – wychodzimy z pętli.
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (chrono::steady_clock::now() - initStart > kInitTimeout) {           // Zbyt długie oczekiwanie -> błąd testu.
+            cerr << "[ERROR] Initialization timeout" << endl;
+            return 1;
+        }
+        this_thread::sleep_for(kPollingInterval);                              // Czekamy chwilę przed kolejnym sprawdzeniem.
     }
 
-    DirectionState snapshotAtoB;
-    DirectionState snapshotBtoA;
-    {
-        std::lock_guard<std::mutex> lock(mutexAtoB);
-        snapshotAtoB = directionAtoB;
+    cout << "[StabilityTest] All devices initialized" << endl; // Meldunek – można zaczynać test właściwy.
+
+    random_device rd;                                                           // Źródło entropii (seed dla generatora).
+    mt19937 engine(rd());                                                       // Generator liczb pseudolosowych (Mersenne Twister).
+    uniform_int_distribution<int> deviceDist(0, kDeviceCount - 1);              // Równomierny rozkład nad indeksem urządzeń.
+    uniform_int_distribution<int> lengthDist(1, kMaxPayloadLength);             // Rozkład dla długości tekstu.
+    const string alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; // Dostępny alfabet.
+    uniform_int_distribution<int> charDist(0, static_cast<int>(alphabet.size()) - 1); // Rozkład dla pojedynczych znaków.
+
+    size_t sendFailures = 0;                                                    // Licznik nieudanych prób wysłania.
+
+    for (int i = 0; i < kMessageCount; ++i) {
+        int senderIndex = deviceDist(engine);                                   // Losujemy nadawcę.
+        int receiverIndex;                                                     // Oddzielna zmienna na odbiorcę.
+        do {
+            receiverIndex = deviceDist(engine);                                // Losujemy, aż trafi się ktoś inny niż nadawca.
+        } while (receiverIndex == senderIndex);
+
+        DeviceContext& senderCtx = *devices[static_cast<size_t>(senderIndex)];  // Referencje upraszczają dostęp do kontekstu.
+        DeviceContext& receiverCtx = *devices[static_cast<size_t>(receiverIndex)];
+
+        auto maybeConnection = getConnection(senderCtx, receiverCtx.id);        // Sprawdzamy, czy mamy gotowy kanał.
+        if (!maybeConnection) {                                                 // Jeśli nie...
+            maybeConnection = ensureConnection(senderCtx, receiverCtx);         // ...próbujemy zestawić połączenie na żądanie.
+        }
+        if (!maybeConnection) {                                                 // Połączenie się nie udało – raportujemy i pomijamy wysyłkę.
+            cerr << "[ERROR] Missing connection from " << senderCtx.id << " to " << receiverCtx.id << endl;
+            ++sendFailures;
+            continue;
+        }
+
+        const string randomText = generateRandomString(engine, lengthDist, alphabet, charDist); // Tworzymy losowy tekst.
+        string payload = buildJsonPayload(senderCtx.id, i, randomText);          // Szykujemy JSON z numerem i treścią.
+
+        MessageRecord& record = records[static_cast<size_t>(i)];                 // Bierzemy rekord odpowiadający bieżącej wiadomości.
+        record.senderId = senderCtx.id;                                         // Zapamiętujemy nadawcę...
+        record.receiverId = receiverCtx.id;                                     // ...i odbiorcę.
+        record.payload = payload;                                               // Archiwizujemy wysłaną treść.
+        record.delivered.store(false, memory_order_relaxed);                    // Zerujemy flagę dostarczenia (nowa wiadomość).
+        record.received.store(false, memory_order_relaxed);                     // Zerujemy flagę odbioru.
+
+        try {
+            senderCtx.sdk->send(
+                maybeConnection.value(),
+                payload,
+                MessageFormat::JSON,
+                kDefaultPriority,
+                false,
+                [index = i, &records]() {                                       // onDelivered – callback ustawia flagę delivered.
+                    records[static_cast<size_t>(index)].delivered.store(true, memory_order_relaxed);
+                }
+            );
+        } catch (const exception& ex) {
+            ++sendFailures;                                                     // Jeśli send rzuci wyjątkiem – inkrementujemy licznik...
+            cerr << "[ERROR] send failed from " << senderCtx.id << " to " << receiverCtx.id
+                 << ": " << ex.what() << endl;                                 // ...i wypisujemy powód.
+        }
     }
-    {
-        std::lock_guard<std::mutex> lock(mutexBtoA);
-        snapshotBtoA = directionBtoA;
+
+    if (sendFailures > 0) {
+        cerr << "[WARN] Send failures encountered: " << sendFailures << endl;   // Po pętli informujemy o liczbie nieudanych wysyłek.
     }
 
-    const int finalCorrectToA = correctToA.load();
-    const int finalIncorrectToA = incorrectToA.load();
-    const int finalCorrectToB = correctToB.load();
-    const int finalIncorrectToB = incorrectToB.load();
+    const auto deliveryStart = chrono::steady_clock::now();                     // Chwila startu odliczania dostaw.
+    while (true) {
+        bool allDelivered = true;                                               // Zakładamy sukces.
+        for (const auto& record : records) {
+            if (!record.delivered.load(memory_order_relaxed) ||
+                !record.received.load(memory_order_relaxed)) {                   // Wystarczy, że jedna wiadomość ma false -> czekamy dalej.
+                allDelivered = false;
+                break;
+            }
+        }
+        if (allDelivered) {                                                     // Wszystkie flagi ustawione -> kończymy oczekiwanie.
+            break;
+        }
+        if (chrono::steady_clock::now() - deliveryStart > kDeliveryTimeout) {   // Upłynął limit czasu -> raportujemy błąd.
+            cerr << "[ERROR] Delivery timeout" << endl;
+            break;
+        }
+        this_thread::sleep_for(kPollingInterval);                              // Krótka pauza przed następnym sprawdzeniem.
+    }
 
-    const int missingToB = static_cast<int>(snapshotAtoB.expectedMessages.size());
-    const int missingToA = static_cast<int>(snapshotBtoA.expectedMessages.size());
+    size_t deliveredCount = 0;                                                  // Licznik wiadomości z potwierdzonym dostarczeniem.
+    size_t receivedCount = 0;                                                   // Licznik wiadomości odebranych przez handler.
+    vector<int> missingDelivery;                                                // Indeksy wiadomości bez potwierdzenia dostarczenia.
+    vector<int> missingReception;                                               // Indeksy wiadomości bez potwierdzenia odbioru.
 
-    std::cout << "\n=== Podsumowanie testu stabilnosci 2 synchronicznego ===" << std::endl;
-    std::cout << "Wiadomosci wyslane z A do B: " << kMessageCountPerDirection << std::endl;
-    std::cout << "  Odebrane poprawnie przez B: " << finalCorrectToB << std::endl;
-    std::cout << "  Bledne u B: " << finalIncorrectToB << std::endl;
-    std::cout << "  Brakujace u B: " << missingToB << std::endl;
-    std::cout << "  Niepowodzenia wysylki A: " << sendFailuresA << std::endl;
+    for (int i = 0; i < kMessageCount; ++i) {
+        const auto& record = records[static_cast<size_t>(i)];                   // Odczytujemy bieżący rekord.
+        if (record.delivered.load(memory_order_relaxed)) {                      // Sprawdzamy flagę delivered...
+            ++deliveredCount;                                                   // ...i zliczamy sukcesy.
+        } else {
+            missingDelivery.push_back(i);                                       // W przeciwnym razie zapamiętujemy indeks.
+        }
+        if (record.received.load(memory_order_relaxed)) {                       // Analogicznie – flaga received.
+            ++receivedCount;
+        } else {
+            missingReception.push_back(i);
+        }
+    }
 
-    std::cout << "Wiadomosci wyslane z B do A: " << kMessageCountPerDirection << std::endl;
-    std::cout << "  Odebrane poprawnie przez A: " << finalCorrectToA << std::endl;
-    std::cout << "  Bledne u A: " << finalIncorrectToA << std::endl;
-    std::cout << "  Brakujace u A: " << missingToA << std::endl;
-    std::cout << "  Niepowodzenia wysylki B: " << sendFailuresB << std::endl;
+    cout << "[StabilityTest] Messages delivered: " << deliveredCount << " / " << kMessageCount << endl;
+    cout << "[StabilityTest] Messages received : " << receivedCount << " / " << kMessageCount << endl;
 
-    printDebugDetails("A -> B (B odbiera)", snapshotAtoB, kMessageCountPerDirection);
-    printDebugDetails("B -> A (A odbiera)", snapshotBtoA, kMessageCountPerDirection);
+    if (!missingDelivery.empty() || !missingReception.empty()) {
+        cerr << "[ERROR] Test failed" << endl;                                 // Jeśli którekolwiek listy są niepuste – test nie zdał.
+        if (!missingDelivery.empty()) {
+            cerr << "  Missing deliveries (indices): ";                        // Wypisujemy indeksy bez potwierdzenia dostarczenia.
+            for (int idx : missingDelivery) {
+                cerr << idx << ' ';
+            }
+            cerr << endl;
+        }
+        if (!missingReception.empty()) {
+            cerr << "  Missing receptions (indices): ";                       // Analogicznie dla nieodebranych wiadomości.
+            for (int idx : missingReception) {
+                cerr << idx << ' ';
+            }
+            cerr << endl;
+        }
+        return 3;                                                               // Kończymy z kodem błędu.
+    }
 
-    std::cout << "[Test] Zakonczono test stabilnosci 2 synchroniczny" << std::endl;
-
-    return 0;
+    cout << "[StabilityTest] Completed successfully" << endl;                  // Jeśli doszliśmy tutaj – test zakończył się sukcesem.
+    return 0;                                                                   // Zwracamy kod powodzenia.
 }

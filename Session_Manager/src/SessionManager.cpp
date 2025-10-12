@@ -8,6 +8,7 @@
 #include <utility>
 #include <mutex>
 #include <thread>
+#include <stdexcept>
 
 using namespace std;
 using namespace chrono;
@@ -16,8 +17,11 @@ SessionManager::SessionManager(queue<Message>& sdkQueue, EminentSdk& sdk, const 
     : LoggerBase("SessionManager"),
       sdkQueue_(sdkQueue),
       sdk_(sdk),
-      validationConfig_(validationConfig),
-      maxPacketSize_(maxPacketSize) {
+            validationConfig_(validationConfig),
+            maxPacketSize_(maxPacketSize) {
+        if (maxPacketSize_ == 0) {
+                throw invalid_argument("SessionManager requires positive maxPacketSize");
+        }
     maxPackageIdValue_ = maxValueForBits(validationConfig_.packageIdBitWidth());
     maxMessageIdValue_ = maxValueForBits(validationConfig_.messageIdBitWidth());
     maxFragmentIdValue_ = maxValueForBits(validationConfig_.fragmentIdBitWidth());

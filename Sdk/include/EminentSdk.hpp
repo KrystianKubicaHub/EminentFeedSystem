@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <string>
@@ -9,15 +10,18 @@
 #include <commonTypes.hpp>
 #include <logging.hpp>
 #include <ValidationConfig.hpp>
+#include "AbstractPhysicalLayer.hpp"
 #include "SessionManager.hpp"
 #include "TransportLayer.hpp"
-#include "PhysicalLayer.hpp"
 #include "CodingModule.hpp"
 
 using namespace std;
 
 class EminentSdk : public LoggerBase {
 public:
+    EminentSdk(unique_ptr<AbstractPhysicalLayer> physicalLayer,
+               const ValidationConfig& validationConfig = ValidationConfig{},
+               LogLevel logLevel = LogLevel::NONE);
     EminentSdk(int localPort, const string& remoteHost, int remotePort, LogLevel logLevel = LogLevel::NONE);
     EminentSdk(int localPort, const string& remoteHost, int remotePort, const ValidationConfig& validationConfig, LogLevel logLevel = LogLevel::NONE);
 
@@ -80,10 +84,10 @@ private:
     SessionManager sessionManager_;
     TransportLayer transportLayer_;
     CodingModule codingModule_;
-    PhysicalLayerUdp physicalLayer_;
-    int localPort_;
+    unique_ptr<AbstractPhysicalLayer> physicalLayer_;
+    int localPort_ = 0;
     string remoteHost_;
-    int remotePort_;
+    int remotePort_ = 0;
 
     struct HandshakePayload {
         bool hasDeviceId = false;

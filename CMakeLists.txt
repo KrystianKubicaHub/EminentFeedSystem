@@ -81,7 +81,9 @@ target_link_libraries(transport_layer PUBLIC common_utils)
 
 
 add_library(physical_layer
-    Physical_Layer/src/PhysicalLayer.cpp
+    Physical_Layer/src/AbstractPhysicalLayer.cpp
+    Physical_Layer/src/PhysicalLayerUdp.cpp
+    Physical_Layer/src/PhysicalLayerInMemory.cpp
 )
 
 target_include_directories(physical_layer PUBLIC

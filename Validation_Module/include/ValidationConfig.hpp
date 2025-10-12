@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <commonTypes.hpp>
 
@@ -7,6 +8,11 @@ using namespace std;
 
 class ValidationConfig {
 public:
+    static constexpr size_t FORMAT_FIELD_BYTES = 1;
+    static constexpr size_t REQUIRE_ACK_FIELD_BYTES = 1;
+    static constexpr size_t PAYLOAD_LENGTH_FIELD_BYTES = 2;
+    static constexpr size_t CRC_FIELD_BYTES = 4;
+
     static constexpr uint8_t DEFAULT_DEVICE_ID_BITS = 16;
     static constexpr uint8_t DEFAULT_CONNECTION_ID_BITS = 16;
     static constexpr uint8_t DEFAULT_MESSAGE_ID_BITS = 24;
@@ -45,9 +51,14 @@ public:
     uint8_t priorityBitWidth() const { return priorityBits_; }
     uint8_t specialCodeBitWidth() const { return specialCodeBits_; }
 
+    size_t transportHeaderBytes() const;
+    size_t maxPayloadLengthBytes() const;
+    size_t maxFrameLengthBytes() const;
+
 private:
     bool fitsInBits(int value, uint8_t bits) const;
     void validateBits(uint8_t bits) const;
+    size_t bitsToBytes(uint8_t bits) const;
 
     const uint8_t deviceIdBits_;
     const uint8_t connectionIdBits_;

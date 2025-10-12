@@ -1,7 +1,9 @@
 #include "EminentSdk.hpp"
+#include "PhysicalLayerUdp.hpp"
 #include "ValidationConfig.hpp"
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -26,8 +28,12 @@ int main() {
         );
         cout << "ValidationConfig instances created successfully" << endl;
 
-        EminentSdk sdkA(8001, "127.0.0.1", 8002, defaultValidation);
-        EminentSdk sdkB(8002, "127.0.0.1", 8001, customValidation);
+    auto physicalLayerA = make_unique<PhysicalLayerUdp>(8001, "127.0.0.1", 8002);
+    auto physicalLayerB = make_unique<PhysicalLayerUdp>(8002, "127.0.0.1", 8001);
+
+    EminentSdk sdkA(std::move(physicalLayerA), defaultValidation);
+
+    EminentSdk sdkB(std::move(physicalLayerB), defaultValidation);
    
 
         DeviceId idA = 1001;

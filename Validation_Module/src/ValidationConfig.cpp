@@ -126,3 +126,29 @@ void ValidationConfig::validateBits(uint8_t bits) const {
         throw invalid_argument("ValidationConfig: number of bits must be between 1 and 32");
     }
 }
+
+size_t ValidationConfig::bitsToBytes(uint8_t bits) const {
+    size_t bytes = (bits + 7U) / 8U;
+    return bytes == 0 ? 1U : bytes;
+}
+
+size_t ValidationConfig::transportHeaderBytes() const {
+    return bitsToBytes(packageIdBits_)
+        + bitsToBytes(messageIdBits_)
+        + bitsToBytes(connectionIdBits_)
+        + bitsToBytes(fragmentIdBits_)
+        + bitsToBytes(fragmentsCountBits_)
+        + bitsToBytes(priorityBits_)
+        + FORMAT_FIELD_BYTES
+        + REQUIRE_ACK_FIELD_BYTES
+        + PAYLOAD_LENGTH_FIELD_BYTES;
+}
+
+size_t ValidationConfig::maxPayloadLengthBytes() const {
+    size_t maxPayloadFromEncoding = (1ULL << (PAYLOAD_LENGTH_FIELD_BYTES * 8U)) - 1ULL;
+    return static_cast<size_t>(maxPayloadFromEncoding);
+}
+
+size_t ValidationConfig::maxFrameLengthBytes() const {
+    return transportHeaderBytes() + maxPayloadLengthBytes() + CRC_FIELD_BYTES;
+}

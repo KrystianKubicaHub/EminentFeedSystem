@@ -18,7 +18,7 @@ class EminentSdk;
 
 class SessionManager : public LoggerBase {
 public:
-    SessionManager(queue<Message>& sdkQueue, EminentSdk& sdk, const ValidationConfig& validationConfig, size_t maxPacketSize = 256);
+    SessionManager(queue<Message>& sdkQueue, EminentSdk& sdk, const ValidationConfig& validationConfig, size_t maxPacketSize);
 
     void processMessages();
 
