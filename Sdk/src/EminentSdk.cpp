@@ -111,17 +111,20 @@ void EminentSdk::onMessageReceived(const Message& msg) {
 }
 
 void EminentSdk::handleJsonMessage(const Message& msg) {
-    auto it = connections_.find(msg.connId);
+    // Decrypt payload if encryption is active
+    Message decMsg = decryptMessageIfNeeded(msg);
+
+    auto it = connections_.find(decMsg.connId);
     if (it == connections_.end()) {
         auto match = find_if(
             connections_.begin(),
             connections_.end(),
             [&](const auto& entry) {
-                return entry.second.id == msg.connId;
+                return entry.second.id == decMsg.connId;
             }
         );
         if (match == connections_.end()) {
-            log(LogLevel::WARN, string("JSON message for unknown connectionId=") + to_string(msg.connId));
+            log(LogLevel::WARN, string("JSON message for unknown connectionId=") + to_string(decMsg.connId));
             return;
         }
         it = match;
@@ -176,8 +179,8 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
         return json.substr(valueStart, valueEnd - valueStart);
     };
 
-    auto text = extractStringField(msg.payload, "text");
-    auto from = extractStringField(msg.payload, "from");
+    auto text = extractStringField(decMsg.payload, "text");
+    auto from = extractStringField(decMsg.payload, "from");
 
     ostringstream oss;
     oss << "JSON message on connection " << conn.id << " remoteId=" << conn.remoteId;
@@ -187,12 +190,12 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
     if (text.has_value()) {
         oss << " text='" << *text << "'";
     } else {
-        oss << " payload='" << msg.payload << "'";
+        oss << " payload='" << decMsg.payload << "'";
     }
     log(LogLevel::INFO, oss.str());
 
     if (conn.onMessage) {
-        conn.onMessage(msg);
+        conn.onMessage(decMsg);
     } else {
         log(LogLevel::WARN, string("No onMessage callback for connection ") + to_string(conn.id));
     }
@@ -200,19 +203,38 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
 
 void EminentSdk::handleVideoMessage(const Message& msg) {
     // VIDEO format is used internally for binary user data
-    auto it = findConnection(msg.connId);
+    // Decrypt payload if encryption is active
+    Message decMsg = decryptMessageIfNeeded(msg);
+
+    auto it = findConnection(decMsg.connId);
     if (it == connections_.end()) {
-        log(LogLevel::WARN, string("Binary message for unknown connectionId=") + to_string(msg.connId));
+        log(LogLevel::WARN, string("Binary message for unknown connectionId=") + to_string(decMsg.connId));
         return;
     }
 
     log(LogLevel::DEBUG, string("Binary message on connection ") + to_string(it->second.id) +
-        " size=" + to_string(msg.payload.size()));
+        " size=" + to_string(decMsg.payload.size()));
 
     if (it->second.onMessage) {
-        it->second.onMessage(msg);
+        it->second.onMessage(decMsg);
     } else {
         log(LogLevel::WARN, string("No onMessage callback for connection ") + to_string(it->second.id));
+    }
+}
+
+Message EminentSdk::decryptMessageIfNeeded(const Message& msg) {
+    if (!shouldEncrypt(msg.format)) {
+        return msg;
+    }
+    vector<uint8_t> cipherBytes(msg.payload.begin(), msg.payload.end());
+    try {
+        vector<uint8_t> plainBytes = decryptPayload(cipherBytes);
+        Message decrypted = msg;
+        decrypted.payload = string(plainBytes.begin(), plainBytes.end());
+        return decrypted;
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Decryption failed: ") + ex.what() + " - passing raw payload");
+        return msg;
     }
 }
 
@@ -753,8 +775,16 @@ void EminentSdk::send(
         throw runtime_error(string("Send failed: ") + ex.what());
     }
 
+    // Encrypt payload if encryption is enabled for this format
+    string finalPayload = payload;
+    if (shouldEncrypt(format)) {
+        vector<uint8_t> plainBytes(payload.begin(), payload.end());
+        vector<uint8_t> encrypted = encryptPayload(id, plainBytes);
+        finalPayload = string(encrypted.begin(), encrypted.end());
+    }
+
     MessageId mid = nextMessageId();
-    Message msg{ mid, id, payload, format, priority, requireAck, onDelivered };
+    Message msg{ mid, id, finalPayload, format, priority, requireAck, onDelivered };
     try {
         validationConfig_.validateMessage(msg);
     } catch (const exception& ex) {
@@ -872,8 +902,14 @@ void EminentSdk::sendBinary(
         throw runtime_error(string("sendBinary failed: ") + ex.what());
     }
 
+    // Encrypt binary data if encryption is enabled
+    vector<uint8_t> finalData = data;
+    if (shouldEncrypt(MessageFormat::VIDEO)) {
+        finalData = encryptPayload(id, data);
+    }
+
     // Store binary data in string (std::string can hold arbitrary bytes)
-    string payload(data.begin(), data.end());
+    string payload(finalData.begin(), finalData.end());
 
     MessageId mid = nextMessageId();
     Message msg{ mid, id, payload, MessageFormat::VIDEO, priority, requireAck, onDelivered };
@@ -1186,6 +1222,89 @@ int EminentSdk::getMaxRetransmitAttempts() const {
 
 chrono::milliseconds EminentSdk::getRetransmitInterval() const {
     return sessionManager_.getRetransmitInterval();
+}
+
+// ============================================================
+// Encryption API
+// ============================================================
+
+void EminentSdk::setCryptoModule(shared_ptr<ICryptoModule> cryptoModule) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    cryptoModule_ = std::move(cryptoModule);
+    log(LogLevel::INFO, "Crypto module set");
+}
+
+void EminentSdk::addEncryptionKey(uint8_t keyId, const vector<uint8_t>& key) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    if (!cryptoModule_) {
+        log(LogLevel::WARN, "addEncryptionKey: no crypto module set");
+        return;
+    }
+    cryptoModule_->addKey(keyId, key);
+    log(LogLevel::INFO, string("Encryption key added: keyId=") + to_string(keyId));
+}
+
+void EminentSdk::removeEncryptionKey(uint8_t keyId) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    if (!cryptoModule_) {
+        log(LogLevel::WARN, "removeEncryptionKey: no crypto module set");
+        return;
+    }
+    cryptoModule_->removeKey(keyId);
+    log(LogLevel::INFO, string("Encryption key removed: keyId=") + to_string(keyId));
+}
+
+void EminentSdk::setDefaultEncryptionKey(uint8_t keyId) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    defaultKeyId_ = keyId;
+    log(LogLevel::INFO, string("Default encryption keyId set to ") + to_string(keyId));
+}
+
+void EminentSdk::setConnectionEncryptionKey(ConnectionId connId, uint8_t keyId) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    connectionKeyMap_[connId] = keyId;
+    log(LogLevel::INFO, string("Connection ") + to_string(connId) +
+        " encryption keyId set to " + to_string(keyId));
+}
+
+void EminentSdk::enableEncryption(bool enabled) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    encryptionEnabled_ = enabled;
+    log(LogLevel::INFO, string("Encryption ") + (enabled ? "enabled" : "disabled"));
+}
+
+bool EminentSdk::isEncryptionEnabled() const {
+    lock_guard<recursive_mutex> lock(mutex_);
+    return encryptionEnabled_;
+}
+
+uint8_t EminentSdk::getKeyForConnection(ConnectionId connId) const {
+    auto it = connectionKeyMap_.find(connId);
+    if (it != connectionKeyMap_.end()) {
+        return it->second;
+    }
+    return defaultKeyId_;
+}
+
+bool EminentSdk::shouldEncrypt(MessageFormat format) const {
+    if (!encryptionEnabled_ || !cryptoModule_) return false;
+    return (format == MessageFormat::JSON || format == MessageFormat::VIDEO);
+}
+
+vector<uint8_t> EminentSdk::encryptPayload(ConnectionId connId, const vector<uint8_t>& plaintext) {
+    uint8_t keyId = getKeyForConnection(connId);
+    if (!cryptoModule_->hasKey(keyId)) {
+        log(LogLevel::WARN, string("encryptPayload: keyId=") + to_string(keyId) + " not found, sending unencrypted");
+        return plaintext;
+    }
+    return cryptoModule_->encrypt(plaintext, keyId);
+}
+
+vector<uint8_t> EminentSdk::decryptPayload(const vector<uint8_t>& ciphertext) {
+    if (!cryptoModule_ || ciphertext.empty()) {
+        return ciphertext;
+    }
+    return cryptoModule_->decrypt(ciphertext);
 }
 
 // ============================================================

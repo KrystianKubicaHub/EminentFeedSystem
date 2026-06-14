@@ -18,6 +18,7 @@
 #include "SessionManager.hpp"
 #include "TransportLayer.hpp"
 #include "CodingModule.hpp"
+#include "ICryptoModule.hpp"
 
 #define EMINENT_SDK_VERSION_MAJOR 1
 #define EMINENT_SDK_VERSION_MINOR 0
@@ -106,6 +107,15 @@ public:
     void setRetransmissionConfig(int maxAttempts, chrono::milliseconds interval);
     int getMaxRetransmitAttempts() const;
     chrono::milliseconds getRetransmitInterval() const;
+
+    // --- Encryption ---
+    void setCryptoModule(shared_ptr<ICryptoModule> cryptoModule);
+    void addEncryptionKey(uint8_t keyId, const vector<uint8_t>& key);
+    void removeEncryptionKey(uint8_t keyId);
+    void setDefaultEncryptionKey(uint8_t keyId);
+    void setConnectionEncryptionKey(ConnectionId connId, uint8_t keyId);
+    void enableEncryption(bool enabled);
+    bool isEncryptionEnabled() const;
 
     // --- Error callback (transport-level issues) ---
     void setOnTransportError(function<void(const string&)> handler);
@@ -197,7 +207,20 @@ private:
     void handleHandshakeFinalConfirmation(const Message& msg, const HandshakePayload& payload);
     void handleJsonMessage(const Message& msg);
     void handleVideoMessage(const Message& msg);
+    Message decryptMessageIfNeeded(const Message& msg);
     string statusToString(ConnectionStatus status) const;
+
+    // --- Encryption state ---
+    shared_ptr<ICryptoModule> cryptoModule_;
+    uint8_t defaultKeyId_ = 0;
+    bool encryptionEnabled_ = false;
+    unordered_map<ConnectionId, uint8_t> connectionKeyMap_;
+
+    // --- Encryption helpers ---
+    vector<uint8_t> encryptPayload(ConnectionId connId, const vector<uint8_t>& plaintext);
+    vector<uint8_t> decryptPayload(const vector<uint8_t>& ciphertext);
+    bool shouldEncrypt(MessageFormat format) const;
+    uint8_t getKeyForConnection(ConnectionId connId) const;
 
     // --- Helpers ---
     unordered_map<int, Connection>::iterator findConnection(ConnectionId id);

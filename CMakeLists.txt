@@ -1,4 +1,5 @@
 include_directories(${CMAKE_SOURCE_DIR}/Physical_Layer/include)
+include_directories(${CMAKE_SOURCE_DIR}/Crypto_Module/include)
 add_library(CodingModule
     Coding_Module/src/CodingModule.cpp
 )
@@ -58,11 +59,13 @@ target_include_directories(eminent_sdk PUBLIC
     Physical_Layer/include
     Coding_Module/include
     Validation_Module/include
+    Crypto_Module/include
     common
 )
 
 target_link_libraries(eminent_sdk PUBLIC common_utils)
 target_link_libraries(eminent_sdk PUBLIC validation_module)
+target_link_libraries(eminent_sdk PUBLIC crypto_module)
 
 add_library(session_manager
     Session_Manager/src/SessionManager.cpp
@@ -99,6 +102,16 @@ target_include_directories(physical_layer PUBLIC
 )
 
 target_link_libraries(physical_layer PUBLIC common_utils)
+
+add_library(crypto_module
+    Crypto_Module/src/ChaCha20CryptoModule.cpp
+)
+
+target_include_directories(crypto_module PUBLIC
+    Crypto_Module/include
+)
+
+target_link_libraries(crypto_module PUBLIC common_utils)
 
 
 # Tworzymy tylko główny plik wykonywalny z app/main.cpp
@@ -169,6 +182,7 @@ set(TEST_LIBS
     CodingModule
     common_utils
     validation_module
+    crypto_module
     gtest
     gtest_main
 )
@@ -180,6 +194,7 @@ set(TEST_INCLUDES
     Physical_Layer/include
     Coding_Module/include
     Validation_Module/include
+    Crypto_Module/include
     common
 )
 
@@ -206,3 +221,9 @@ add_executable(test_physical_layer Physical_Layer/tests/test_physical_layer.cpp)
 target_link_libraries(test_physical_layer ${TEST_LIBS})
 target_include_directories(test_physical_layer PRIVATE ${TEST_INCLUDES})
 add_test(NAME test_physical_layer COMMAND test_physical_layer)
+
+# Crypto Module tests
+add_executable(test_crypto Crypto_Module/tests/test_crypto.cpp)
+target_link_libraries(test_crypto ${TEST_LIBS})
+target_include_directories(test_crypto PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_crypto COMMAND test_crypto)
