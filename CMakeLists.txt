@@ -227,3 +227,56 @@ add_executable(test_crypto Crypto_Module/tests/test_crypto.cpp)
 target_link_libraries(test_crypto ${TEST_LIBS})
 target_include_directories(test_crypto PRIVATE ${TEST_INCLUDES})
 add_test(NAME test_crypto COMMAND test_crypto)
+
+# ============================================================
+# Integration Tests (SDK end-to-end via InMemory)
+# ============================================================
+
+# Handshake integration
+add_executable(test_integration_handshake tests/integration/test_sdk_handshake.cpp)
+target_link_libraries(test_integration_handshake ${TEST_LIBS})
+target_include_directories(test_integration_handshake PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_integration_handshake COMMAND test_integration_handshake)
+
+# Encryption E2E integration
+add_executable(test_integration_encryption tests/integration/test_sdk_encryption_e2e.cpp)
+target_link_libraries(test_integration_encryption ${TEST_LIBS})
+target_include_directories(test_integration_encryption PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_integration_encryption COMMAND test_integration_encryption)
+
+# Disconnect integration
+add_executable(test_integration_disconnect tests/integration/test_sdk_disconnect.cpp)
+target_link_libraries(test_integration_disconnect ${TEST_LIBS})
+target_include_directories(test_integration_disconnect PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_integration_disconnect COMMAND test_integration_disconnect)
+
+# Heartbeat integration
+add_executable(test_integration_heartbeat tests/integration/test_sdk_heartbeat.cpp)
+target_link_libraries(test_integration_heartbeat ${TEST_LIBS})
+target_include_directories(test_integration_heartbeat PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_integration_heartbeat COMMAND test_integration_heartbeat)
+
+# Retransmission integration
+add_executable(test_integration_retransmission tests/integration/test_sdk_retransmission.cpp)
+target_link_libraries(test_integration_retransmission ${TEST_LIBS})
+target_include_directories(test_integration_retransmission PRIVATE ${TEST_INCLUDES})
+add_test(NAME test_integration_retransmission COMMAND test_integration_retransmission)
+
+# ============================================================
+# Examples (Mac console — not a test, user application)
+# ============================================================
+option(BUILD_EXAMPLES "Build example applications" OFF)
+if(BUILD_EXAMPLES)
+    add_executable(mac_console examples/mac_console/main.cpp)
+    target_link_libraries(mac_console
+        eminent_sdk
+        session_manager
+        transport_layer
+        physical_layer
+        CodingModule
+        common_utils
+        validation_module
+        crypto_module
+    )
+    target_include_directories(mac_console PRIVATE ${TEST_INCLUDES})
+endif()

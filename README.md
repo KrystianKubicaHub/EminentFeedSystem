@@ -1,110 +1,143 @@
 # EminentFeedSystem SDK
 
-> **Version 1.0.0** — A lightweight, real-time peer-to-peer communication SDK for embedded systems and drones.
+> **Version 1.0.0** — Lightweight real-time peer-to-peer communication library for embedded systems and drones over WiFi.
+
+## What is this?
+
+A C++17 networking SDK for **encrypted bidirectional communication between ESP32 and Mac/PC over WiFi (UDP)**. Designed for drone-pilot, robot-controller, and IoT telemetry scenarios.
+
+```
+┌──────────────┐         WiFi (UDP)         ┌──────────────┐
+│    ESP32     │ ◄──── encrypted ────────►   │   Mac / PC   │
+│  gyroscope   │        ChaCha20             │   console    │
+│  motor PWM   │                             │   commands   │
+└──────────────┘                             └──────────────┘
+```
 
 ## Features
 
-- **Peer-to-peer connections** with handshake, heartbeat, and disconnect protocol
-- **Multiple message formats** — JSON text and binary (VIDEO) payloads
-- **Priority-based messaging** with configurable retransmission
-- **Encryption** — Swappable ChaCha20 stream cipher (pre-shared keys, per-message nonce)
-- **Transport-agnostic** — In-memory (testing) or UDP physical layer
-- **Thread-safe** — Recursive mutex protection, safe for multi-threaded use
-- **Zero external dependencies** — Pure C++17, no OpenSSL or Boost required
+- **WiFi UDP transport** — ESP32 ↔ Mac/PC, real-time, low-latency
+- **Encrypted** — ChaCha20 stream cipher, 256-bit pre-shared keys, per-message nonce
+- **Reliable delivery** — Configurable retransmission, ACK/NACK, message ordering
+- **Heartbeat** — Automatic connection health monitoring, miss detection callbacks
+- **Graceful disconnect** — Protocol-level disconnect with notifications
+- **Multi-connection** — One device can maintain multiple simultaneous connections
+- **Zero external dependencies** — Pure C++17, no OpenSSL or Boost
 
 ## Requirements
 
-- C++17 compiler (GCC 8+, Clang 10+, AppleClang 12+, MSVC 2017+)
-- CMake 3.10+
-- Google Test v1.14.0 (auto-fetched via CMake FetchContent)
+| Platform | Toolchain |
+|----------|-----------|
+| ESP32 | ESP-IDF v5.x (with C++17 support) |
+| Mac/PC | CMake 3.10+, Clang/GCC with C++17 |
 
 ## Quick Start
 
-### Integration via `add_subdirectory`
+### 1. ESP32 Side (Firmware)
 
-```cmake
-# In your project's CMakeLists.txt:
-add_subdirectory(path/to/EminentFeedSystem)
-target_link_libraries(your_app
-    eminent_sdk
-    session_manager
-    transport_layer
-    physical_layer
-    CodingModule
-    common_utils
-    crypto_module
-)
-```
-
-### Build from source
+Add EminentFeedSystem as an ESP-IDF component:
 
 ```bash
-mkdir build && cd build
-cmake ..
-cmake --build . -j$(nproc)
-
-# Run tests
-ctest --output-on-failure
+cd your_esp_project/components
+ln -s /path/to/EminentFeedSystem/esp_idf_component eminent_sdk
 ```
 
-## Usage Example
+In your firmware (`main.cpp`):
 
 ```cpp
 #include "EminentSdk.hpp"
+#include "PhysicalLayerEsp32Wifi.hpp"
 #include "ChaCha20CryptoModule.hpp"
 
-int main() {
-    // Create SDK with UDP transport
-    EminentSdk sdk(5000, "192.168.1.100", 5001, LogLevel::INFO);
+// After WiFi is connected:
+EminentSdk sdk(5001, "192.168.1.100", 5000, LogLevel::INFO);
 
-    // Setup encryption (optional)
-    auto crypto = std::make_shared<ChaCha20CryptoModule>();
-    std::vector<uint8_t> sharedKey(32); // 256-bit pre-shared key
-    // ... fill sharedKey with your secret ...
-    crypto->addKey(1, sharedKey);
+// Setup encryption
+auto crypto = std::make_shared<ChaCha20CryptoModule>();
+std::vector<uint8_t> key = { /* your 32-byte pre-shared key */ };
+crypto->addKey(1, key);
+sdk.setCryptoModule(crypto);
+sdk.addEncryptionKey(1, key);
+sdk.setDefaultEncryptionKey(1);
+sdk.enableEncryption(true);
 
-    sdk.setCryptoModule(crypto);
-    sdk.addEncryptionKey(1, sharedKey);
-    sdk.setDefaultEncryptionKey(1);
-    sdk.enableEncryption(true);
+// Initialize
+sdk.initialize(1, onSuccess, onFailure, onIncoming, onEstablished);
 
-    // Initialize
-    sdk.initialize(
-        /*selfId=*/ 1,
-        /*onSuccess=*/ []() { printf("Initialized!\n"); },
-        /*onFailure=*/ [](const std::string& err) { printf("Failed: %s\n", err.c_str()); },
-        /*onIncomingConnectionDecision=*/ [](DeviceId id, const std::string&) { return true; },
-        /*onConnectionEstablished=*/ [](ConnectionId cid, DeviceId did) {
-            printf("Connection %d established with device %d\n", cid, did);
-        }
-    );
+// Connect to Mac
+sdk.connect(2, 5, onSuccess, onFailure, onTrouble,
+            onDisconnected, onConnected, onMessage);
 
-    // Connect to remote device
-    sdk.connect(
-        /*targetId=*/ 2,
-        /*defaultPriority=*/ 5,
-        /*onSuccess=*/ [](ConnectionId cid) { printf("Connected: %d\n", cid); },
-        /*onFailure=*/ [](const std::string& err) { printf("Error: %s\n", err.c_str()); },
-        /*onTrouble=*/ [](const std::string& msg) { printf("Warning: %s\n", msg.c_str()); },
-        /*onDisconnected=*/ []() { printf("Disconnected\n"); },
-        /*onConnected=*/ [](ConnectionId cid) { printf("Active: %d\n", cid); },
-        /*onMessage=*/ [](const Message& msg) {
-            printf("Received: %s\n", msg.payload.c_str());
-        }
-    );
-
-    // Send encrypted message (encryption happens transparently)
-    // sdk.send(connectionId, "{\"text\":\"Hello drone!\"}");
-
-    // Send binary data
-    // std::vector<uint8_t> frame = ...;
-    // sdk.sendBinary(connectionId, frame);
-
-    // Cleanup
-    // sdk.shutdown();
-    return 0;
-}
+// Send telemetry
+sdk.send(connectionId, "{\"gx\":1.5,\"gy\":-0.3}", nullptr);
 ```
+
+Build with ESP-IDF:
+```bash
+idf.py set-target esp32
+idf.py build
+idf.py flash monitor
+```
+
+### 2. Mac/PC Side (Console App)
+
+```cpp
+#include "EminentSdk.hpp"
+#include "PhysicalLayerUdp.hpp"
+#include "ChaCha20CryptoModule.hpp"
+
+// Same key as ESP32
+EminentSdk sdk(5000, "192.168.1.200", 5001, LogLevel::WARN);
+
+auto crypto = std::make_shared<ChaCha20CryptoModule>();
+std::vector<uint8_t> key = { /* same 32-byte key as ESP32 */ };
+crypto->addKey(1, key);
+sdk.setCryptoModule(crypto);
+sdk.addEncryptionKey(1, key);
+sdk.setDefaultEncryptionKey(1);
+sdk.enableEncryption(true);
+
+sdk.initialize(2, onSuccess, onFailure, onIncoming, onEstablished);
+sdk.connect(1, 5, ...);  // Connect to ESP32
+
+// Receive telemetry
+void onMessage(const Message& msg) {
+    printf("Telemetry: %s\n", msg.payload.c_str());
+}
+
+// Send motor command
+sdk.send(connectionId, "{\"speed\":128}", nullptr);
+```
+
+Build:
+```bash
+cd EminentFeedSystem
+mkdir build && cd build
+cmake -DBUILD_EXAMPLES=ON ..
+make mac_console -j4
+./mac_console 192.168.1.200
+```
+
+## Full Example: Gyroscope + Motor Control
+
+See `examples/` for complete working code:
+
+| Directory | Description |
+|-----------|-------------|
+| `examples/esp32_gyro_motor/` | ESP32 firmware: reads MPU6050 gyro, controls DC motor via PWM, sends telemetry at 10Hz |
+| `examples/mac_console/` | Mac app: displays telemetry in terminal, accepts motor speed input (0-255) |
+
+### Hardware Setup
+
+```
+ESP32 GPIO21 (SDA) ──── MPU6050 SDA
+ESP32 GPIO22 (SCL) ──── MPU6050 SCL
+ESP32 GPIO25 ─────────── L298N IN1 (motor driver)
+ESP32 3.3V ──────────── MPU6050 VCC
+ESP32 GND ───────────── MPU6050 GND, L298N GND
+```
+
+Both ESP32 and Mac must be on the **same WiFi network**.
 
 ## Architecture
 
@@ -112,57 +145,50 @@ int main() {
 ┌─────────────────────────────────────────────┐
 │               EminentSdk                     │  ← User API
 ├─────────────────────────────────────────────┤
-│  Crypto Module (ChaCha20 / Null / Custom)   │  ← Encryption layer
+│  Crypto Module (ChaCha20 / custom)          │  ← Encryption
 ├─────────────────────────────────────────────┤
 │           Session Manager                    │  ← Connection lifecycle
 ├─────────────────────────────────────────────┤
 │           Transport Layer                    │  ← Retransmission, ACK
 ├─────────────────────────────────────────────┤
-│            Coding Module                     │  ← Encoding/framing
+│            Coding Module                     │  ← Framing, CRC
 ├─────────────────────────────────────────────┤
-│   Physical Layer (UDP / InMemory)           │  ← Network I/O
+│     Physical Layer                           │  ← Network I/O
+│  ┌─────────────────┬──────────────────┐     │
+│  │ PhysicalLayerUdp│PhysicalLayerEsp32│     │
+│  │   (Mac/Linux)   │   Wifi (ESP-IDF) │     │
+│  └─────────────────┴──────────────────┘     │
 └─────────────────────────────────────────────┘
 ```
 
 ## Encryption
 
-The SDK uses a **pre-shared key** model ideal for drone-pilot scenarios:
-
-- **Algorithm**: ChaCha20 stream cipher (RFC 7539 core)
-- **Key size**: 256 bits (32 bytes)
-- **Nonce**: 96 bits (12 bytes), randomly generated per message
+- **Algorithm**: ChaCha20 (RFC 7539 core)
+- **Key**: 256-bit pre-shared key (must be identical on both devices)
+- **Nonce**: 96-bit random per message (no counter management needed)
 - **Wire format**: `[keyId: 1B][nonce: 12B][ciphertext: NB]`
-- **Scope**: Only user payloads (JSON, VIDEO) are encrypted; protocol messages (HANDSHAKE, HEARTBEAT, DISCONNECT, ACK) are not encrypted
-
-### Encryption Setup
+- **Scope**: Only user data (JSON, binary) is encrypted; protocol messages (handshake, heartbeat) are not
 
 ```cpp
-#include "ChaCha20CryptoModule.hpp"
+// Both sides must have the same key:
+std::vector<uint8_t> key(32);
+// Fill with your secret (hardware RNG recommended)
 
-// Create and configure
 auto crypto = std::make_shared<ChaCha20CryptoModule>();
-std::vector<uint8_t> key(32, 0x42); // Your 256-bit key
 crypto->addKey(1, key);
 
-// Attach to SDK
 sdk.setCryptoModule(crypto);
 sdk.addEncryptionKey(1, key);
 sdk.setDefaultEncryptionKey(1);
 sdk.enableEncryption(true);
-
-// Per-connection key override (optional)
-sdk.setConnectionEncryptionKey(connectionId, 2);
 ```
 
 ### Custom Crypto Module
 
-Implement `ICryptoModule` to use AES, hardware crypto, or any other algorithm:
+Implement `ICryptoModule` interface to swap in AES, hardware crypto, etc:
 
 ```cpp
-#include "ICryptoModule.hpp"
-
 class MyHardwareCrypto : public ICryptoModule {
-public:
     std::vector<uint8_t> encrypt(const std::vector<uint8_t>& plaintext, uint8_t keyId) override;
     std::vector<uint8_t> decrypt(const std::vector<uint8_t>& encrypted) override;
     void addKey(uint8_t keyId, const std::vector<uint8_t>& key) override;
@@ -173,92 +199,126 @@ public:
 
 ## API Reference
 
-### Initialization
+### Connection Lifecycle
 
-| Method | Description |
-|--------|-------------|
-| `EminentSdk(port, host, remotePort, logLevel)` | Create with UDP transport |
-| `EminentSdk(unique_ptr<AbstractPhysicalLayer>, config, logLevel)` | Create with custom transport |
-| `initialize(selfId, onSuccess, onFailure, onIncoming, onEstablished)` | Start SDK |
-| `shutdown()` | Stop all connections and threads |
+```cpp
+// Initialize SDK
+sdk.initialize(deviceId, onSuccess, onFailure, onIncomingDecision, onEstablished);
 
-### Connection
+// Connect to peer
+sdk.connect(targetDeviceId, priority, onSuccess, onFailure, onTrouble,
+            onDisconnected, onConnected, onMessage,
+            heartbeatInterval, onHeartbeatMissed, handshakeTimeout);
 
-| Method | Description |
-|--------|-------------|
-| `connect(targetId, priority, callbacks...)` | Initiate connection |
-| `disconnect(id)` | Gracefully close connection |
-| `getActiveConnectionIds()` | List active connection IDs |
-| `getConnectedDeviceIds()` | List connected device IDs |
+// Disconnect
+sdk.disconnect(connectionId);
 
-### Messaging
+// Shutdown everything
+sdk.shutdown();
+```
 
-| Method | Description |
-|--------|-------------|
-| `send(id, payload, format, priority, requireAck, onDelivered)` | Full send |
-| `send(id, payload, onDelivered)` | Simplified send (JSON, default priority) |
-| `sendBinary(id, data, onDelivered)` | Send binary data |
-| `sendBinary(id, data, priority, requireAck, onDelivered)` | Full binary send |
+### Sending Data
 
-### Encryption
+```cpp
+// Send JSON (simple)
+sdk.send(connectionId, "{\"temp\":25.3}", nullptr);
 
-| Method | Description |
-|--------|-------------|
-| `setCryptoModule(module)` | Set encryption implementation |
-| `addEncryptionKey(keyId, key)` | Register a pre-shared key |
-| `removeEncryptionKey(keyId)` | Remove a key |
-| `setDefaultEncryptionKey(keyId)` | Set default key for all connections |
-| `setConnectionEncryptionKey(connId, keyId)` | Override key for specific connection |
-| `enableEncryption(enabled)` | Enable/disable encryption |
-| `isEncryptionEnabled()` | Check encryption status |
+// Send with delivery confirmation
+sdk.send(connectionId, payload, MessageFormat::JSON, priority,
+         /*requireAck=*/true, []() { printf("Delivered!\n"); });
+
+// Send binary data (video frames, sensor dumps, etc.)
+std::vector<uint8_t> frame = { /* raw bytes */ };
+sdk.sendBinary(connectionId, frame, nullptr);
+```
 
 ### Configuration
 
-| Method | Description |
-|--------|-------------|
-| `setRetransmissionConfig(maxAttempts, interval)` | Configure retransmission |
-| `setDefaultPriority(id, priority)` | Set connection default priority |
-| `setOnTransportError(handler)` | Register transport error callback |
-| `setOnMessageHandler(id, handler)` | Update message handler |
-| `setOnDisconnected(id, handler)` | Update disconnect handler |
+```cpp
+// Retransmission tuning
+sdk.setRetransmissionConfig(/*maxAttempts=*/5, /*interval=*/200ms);
 
-## Testing
+// Per-connection encryption key
+sdk.setConnectionEncryptionKey(connectionId, keyId);
+
+// Transport error callback
+sdk.setOnTransportError([](const string& err) { /* handle */ });
+```
+
+## Integration into Your Project
+
+### ESP-IDF (ESP32)
 
 ```bash
-cd build
+# Option A: Symlink into components/
+cd your_project/components
+ln -s /path/to/EminentFeedSystem/esp_idf_component eminent_sdk
 
-# Run all tests
-ctest --output-on-failure
-
-# Run specific test suite
-./test_crypto
-./test_sdk
-./test_transport_layer
-./test_session_manager
-./test_physical_layer
-
-# With coverage
-cmake .. -DENABLE_COVERAGE=ON
-cmake --build . -j$(nproc)
-ctest
-gcovr --root .. --filter '../Sdk/' --filter '../Crypto_Module/' -r ..
+# Option B: Set extra component dirs in your project CMakeLists.txt
+set(EXTRA_COMPONENT_DIRS "/path/to/EminentFeedSystem/esp_idf_component")
 ```
+
+### CMake (Mac/Linux/PC)
+
+```cmake
+add_subdirectory(path/to/EminentFeedSystem)
+target_link_libraries(your_app
+    eminent_sdk session_manager transport_layer
+    physical_layer CodingModule common_utils crypto_module
+)
+```
+
+## Building & Testing
+
+```bash
+git clone <repo-url>
+cd EminentFeedSystem
+mkdir build && cd build
+cmake ..
+cmake --build . -j$(nproc)
+
+# Run all tests (unit + integration)
+ctest --output-on-failure --timeout 60
+
+# Build with examples
+cmake -DBUILD_EXAMPLES=ON ..
+make mac_console
+```
+
+### Test Suites
+
+| Suite | Type | Tests | What it covers |
+|-------|------|-------|----------------|
+| `test_crypto` | Unit | 16 | ChaCha20 encrypt/decrypt, key management |
+| `test_transport_layer` | Unit | 11 | Framing, CRC, reliability |
+| `test_session_manager` | Unit | 3 | Session state transitions |
+| `test_physical_layer` | Unit | 6 | Network I/O abstraction |
+| `test_integration_handshake` | Integration | 4 | 3-way handshake, timeout, rejection |
+| `test_integration_encryption` | Integration | 5 | E2E encrypted messaging |
+| `test_integration_disconnect` | Integration | 5 | Graceful disconnect, cleanup |
+| `test_integration_heartbeat` | Integration | 4 | Keepalive, miss detection |
+| `test_integration_retransmission` | Integration | 6 | Reliable delivery, ordering |
+| **Total** | | **60** | |
 
 ## Project Structure
 
 ```
 EminentFeedSystem/
-├── Sdk/                    # Main user-facing API
-├── Crypto_Module/          # Encryption (ChaCha20, Null, interface)
-├── Session_Manager/        # Connection lifecycle, handshake
-├── Transport_Layer/        # Reliable delivery, retransmission
-├── Coding_Module/          # Message encoding/framing
-├── Physical_Layer/         # UDP and in-memory transports
-├── Validation_Module/      # Config validation
-├── common/                 # Shared types, logging
-├── app/                    # Demo applications
-├── docs/                   # Architecture documentation
-└── CMakeLists.txt          # Build system
+├── Sdk/                        # Main user API (EminentSdk)
+├── Crypto_Module/              # Encryption (ChaCha20, interface)
+├── Session_Manager/            # Connection lifecycle
+├── Transport_Layer/            # Reliable delivery
+├── Coding_Module/              # Message framing
+├── Physical_Layer/             # Network I/O
+│   ├── PhysicalLayerUdp        # Mac/Linux (POSIX UDP sockets)
+│   └── PhysicalLayerEsp32Wifi  # ESP32 (ESP-IDF lwIP sockets)
+├── esp_idf_component/          # ESP-IDF component wrapper
+├── examples/
+│   ├── esp32_gyro_motor/       # Complete ESP32 firmware example
+│   └── mac_console/            # Mac terminal app example
+├── tests/
+│   └── integration/            # SDK end-to-end tests (gtest)
+└── CMakeLists.txt
 ```
 
 ## License
