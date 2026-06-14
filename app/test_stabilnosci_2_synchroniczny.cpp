@@ -1,6 +1,6 @@
 // Test stabilności numer 2 uruchamiamy w wariancie synchronicznym na warstwie fizycznej w pamięci.
 // Ten plik zawiera kompletną symulację wielourządzeniowej sieci SDK, dlatego całą logikę dokumentujemy
-// bardzo dokładnie w komentarzach – krok po kroku, linijka po linijce.
+// bardzo dokładnie  w komentarzach – krok po kroku, linijka po linijce.
 
 #include "EminentSdk.hpp"          // Główna klasa SDK – zarządza sesjami, transportem i kodowaniem ramek.
 #include "PhysicalLayerInMemory.hpp" // Warstwa fizyczna oparta na wspólnej pamięci (bez UDP), używana w teście.
