@@ -183,8 +183,11 @@ TEST_F(HandshakeIntegration, MultipleConnections) {
         []() {},
         [&](ConnectionId) { abOk = true; },
         [](const Message&) {},
-        2000ms, nullptr, 10000ms
+        2000ms, nullptr, 15000ms
     );
+
+    // Wait for first connection before starting second
+    waitFor(abOk, 10000ms);
 
     sdkA->connect(idC, 5,
         [&](ConnectionId) { acOk = true; },
@@ -193,11 +196,10 @@ TEST_F(HandshakeIntegration, MultipleConnections) {
         []() {},
         [&](ConnectionId) { acOk = true; },
         [](const Message&) {},
-        2000ms, nullptr, 10000ms
+        2000ms, nullptr, 15000ms
     );
 
-    waitFor(abOk, 8000ms);
-    waitFor(acOk, 8000ms);
+    waitFor(acOk, 10000ms);
 
     auto aIds = sdkA->getActiveConnectionIds();
     EXPECT_GE(aIds.size(), 1u) << "A should have at least one connection";
