@@ -32,7 +32,7 @@ public:
                           std::shared_ptr<InMemoryMedium> medium);
     ~PhysicalLayerInMemory() override;
 
-    void configure(std::queue<Frame>& outgoingFramesFromCodingModule,
+    void configure(ThreadSafeQueue<Frame>& outgoingFramesFromCodingModule,
                    CodingModule& codingModule,
                    const ValidationConfig& validationConfig) override;
 

@@ -9,7 +9,7 @@
 using namespace std;
 using namespace chrono;
 
-TransportLayer::TransportLayer(queue<Package>& outgoingPackages, SessionManager& sessionManager, const ValidationConfig& validationConfig)
+TransportLayer::TransportLayer(ThreadSafeQueue<Package>& outgoingPackages, SessionManager& sessionManager, const ValidationConfig& validationConfig)
         : LoggerBase("TransportLayer"),
             outgoingPackages_(outgoingPackages),
             sessionManager_(sessionManager),
@@ -27,10 +27,8 @@ TransportLayer::~TransportLayer() {
 
 void TransportLayer::workerLoop() {
     while (!stopWorker_) {
-        while (!outgoingPackages_.empty()) {
-            Package pkg = outgoingPackages_.front();
-            outgoingPackages_.pop();
-
+        Package pkg;
+        while (outgoingPackages_.tryPop(pkg)) {
             Frame frame = serialize(pkg);
             outgoingFrames_.push(frame);
 
@@ -194,7 +192,7 @@ void TransportLayer::validateDeserializedPackage(const Package& pkg) const {
     validationConfig_.validatePackage(pkg);
 }
 
-queue<Frame>& TransportLayer::getOutgoingFrames() {
+ThreadSafeQueue<Frame>& TransportLayer::getOutgoingFrames() {
     return outgoingFrames_;
 }
 

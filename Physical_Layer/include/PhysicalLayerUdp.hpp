@@ -17,7 +17,7 @@ public:
     PhysicalLayerUdp(int localPort,
                      const string& remoteHost,
                      int remotePort);
-    void configure(queue<Frame>& outgoingFramesFromCodingModule,
+    void configure(ThreadSafeQueue<Frame>& outgoingFramesFromCodingModule,
                    CodingModule& codingModule,
                    const ValidationConfig& validationConfig) override;
     ~PhysicalLayerUdp() override;

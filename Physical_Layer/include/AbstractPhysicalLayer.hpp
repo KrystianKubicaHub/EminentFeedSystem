@@ -8,6 +8,7 @@
 #include <commonTypes.hpp>
 #include <logging.hpp>
 #include <ValidationConfig.hpp>
+#include <ThreadSafeQueue.hpp>
 
 class CodingModule;
 
@@ -18,7 +19,7 @@ public:
     explicit AbstractPhysicalLayer(const string& loggerName);
     virtual ~AbstractPhysicalLayer() = default;
 
-    virtual void configure(queue<Frame>& outgoingFrames,
+    virtual void configure(ThreadSafeQueue<Frame>& outgoingFrames,
                            CodingModule& codingModule,
                            const ValidationConfig& validationConfig) = 0;
 
@@ -27,7 +28,7 @@ public:
     virtual bool tryReceive(Frame& outFrame) = 0;
 
 protected:
-    queue<Frame>* outgoingFramesFromCodingModule_{nullptr};
+    ThreadSafeQueue<Frame>* outgoingFramesFromCodingModule_{nullptr};
     CodingModule* codingModule_{nullptr};
     const ValidationConfig* validationConfig_{nullptr};
 
@@ -36,7 +37,7 @@ protected:
     size_t maxFrameBytesWithoutCrc_{};
     size_t maxFrameBytesWithCrc_{};
 
-    void setEnvironment(queue<Frame>& outgoingFrames,
+    void setEnvironment(ThreadSafeQueue<Frame>& outgoingFrames,
                         CodingModule& codingModule,
                         const ValidationConfig& validationConfig);
 

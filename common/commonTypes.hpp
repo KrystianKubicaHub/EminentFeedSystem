@@ -18,7 +18,10 @@ enum class MessageFormat {
     JSON,
     VIDEO,
     HANDSHAKE,
-    CONFIRMATION
+    CONFIRMATION,
+    DISCONNECT,
+    HEARTBEAT,
+    HEARTBEAT_ACK
 };
 
 enum class PackageStatus {

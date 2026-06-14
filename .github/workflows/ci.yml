@@ -1,0 +1,63 @@
+name: CI - Build & Test
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: ['*']
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ lcov
+
+      - name: Configure (with coverage)
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON
+
+      - name: Build
+        run: |
+          cd build
+          make -j$(nproc)
+
+      - name: Run tests
+        run: |
+          cd build
+          ctest --output-on-failure --timeout 60
+
+      - name: Generate coverage report
+        run: |
+          cd build
+          lcov --capture --directory . --output-file coverage.info \
+            --ignore-errors mismatch,inconsistent,unsupported,format
+          lcov --remove coverage.info '/usr/*' '*/build/_deps/*' '*/tests/*' \
+            --output-file coverage_filtered.info \
+            --ignore-errors unused,unsupported,inconsistent
+          lcov --list coverage_filtered.info \
+            --ignore-errors unused,unsupported,inconsistent
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: build/coverage_filtered.info
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          cd build
+          ctest --output-on-failure --timeout 60 2>&1 | tee /tmp/test_results.txt || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/test_results.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

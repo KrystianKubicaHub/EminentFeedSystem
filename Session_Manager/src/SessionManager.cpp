@@ -176,28 +176,41 @@ void SessionManager::processSdkQueueLocked(const steady_clock::time_point& now, 
 void SessionManager::retransmitPendingLocked(const steady_clock::time_point& now) {
     for (auto msgIt = pendingMessages_.begin(); msgIt != pendingMessages_.end();) {
         auto& pending = msgIt->second;
+        bool anyDropped = false;
 
         for (auto pkgIt = pending.packages.begin(); pkgIt != pending.packages.end();) {
             auto& info = pkgIt->second;
 
             if (now - info.lastSent >= retransmitInterval_) {
                 if (info.attempts >= maxRetransmitAttempts_) {
-                    log(LogLevel::WARN, string("Dropping package ") + to_string(info.pkg.packageId) +
-                            " after reaching max retransmits");
+                    log(LogLevel::WARN, string("Package ") + to_string(info.pkg.packageId) +
+                            " failed after " + to_string(maxRetransmitAttempts_) +
+                            " retransmit attempts (connId=" + to_string(info.pkg.connId) +
+                            ", msgId=" + to_string(info.pkg.messageId) + ")");
                     packageToMessage_.erase(info.pkg.packageId);
+                    anyDropped = true;
                     pkgIt = pending.packages.erase(pkgIt);
                     continue;
                 }
                 try {
                     sendPackageLocked(info, now);
+                    log(LogLevel::DEBUG, string("Retransmit #") + to_string(info.attempts) +
+                        " for package " + to_string(info.pkg.packageId));
                 } catch (const exception& ex) {
                     log(LogLevel::WARN, string("Failed to retransmit package: ") + ex.what());
                     packageToMessage_.erase(info.pkg.packageId);
+                    anyDropped = true;
                     pkgIt = pending.packages.erase(pkgIt);
                     continue;
                 }
             }
             ++pkgIt;
+        }
+
+        if (anyDropped && pending.packages.empty()) {
+            // All packages for this message failed — notify SDK
+            log(LogLevel::ERROR, string("Message ") + to_string(msgIt->first) +
+                " delivery failed: all retransmission attempts exhausted");
         }
 
         if (pending.packages.empty()) {
@@ -399,13 +412,7 @@ void SessionManager::receivePackage(const Package& pkg) {
 }
 
 bool SessionManager::getNextPackage(Package& out) {
-    lock_guard<mutex> lock(queueMutex_);
-    if (outgoingPackages_.empty()) {
-        return false;
-    }
-    out = outgoingPackages_.front();
-    outgoingPackages_.pop();
-    return true;
+    return outgoingPackages_.tryPop(out);
 }
 
 PackageId SessionManager::allocatePackageId() {
@@ -454,5 +461,11 @@ bool SessionManager::ensureFragmentsFit(int total) const {
     return true;
 }
 
-
+void SessionManager::setRetransmissionConfig(int maxAttempts, chrono::milliseconds interval) {
+    lock_guard<mutex> lock(queueMutex_);
+    maxRetransmitAttempts_ = maxAttempts;
+    retransmitInterval_ = interval;
+    log(LogLevel::INFO, string("Retransmission config: maxAttempts=") +
+        to_string(maxAttempts) + " interval=" + to_string(interval.count()) + "ms");
+}
 

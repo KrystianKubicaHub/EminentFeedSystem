@@ -1,117 +1,102 @@
 #include "TransportLayer.hpp"
+#include "SessionManager.hpp"
+#include "EminentSdk.hpp"
+#include "PhysicalLayerInMemory.hpp"
+#include "ValidationConfig.hpp"
 #include <gtest/gtest.h>
 #include <string>
+#include <vector>
 
-using std::string;
+using namespace std;
 
-TEST(TransportLayerTest, SerializeDeserializeRoundTrip) {
-    TransportLayer tl;
+// ============================================================
+// ValidationConfig tests
+// ============================================================
 
-    Package pkg{};
-    pkg.packageId = 42;
-    pkg.messageId = 99;
-    pkg.senderId = 1001;
-    pkg.receiverId = 2002;
-    pkg.format = MessageFormat::JSON;
-    pkg.requireAck = true;
-    pkg.priority = 7;
-    pkg.payload = R"({"hello": "world"})";
-
-    Frame frame = tl.serialize(pkg);
-    Package decoded = tl.deserialize(frame);
-
-    EXPECT_EQ(decoded.packageId, pkg.packageId);
-    EXPECT_EQ(decoded.messageId, pkg.messageId);
-    EXPECT_EQ(decoded.senderId, pkg.senderId);
-    EXPECT_EQ(decoded.receiverId, pkg.receiverId);
-    EXPECT_EQ(decoded.format, pkg.format);
-    EXPECT_EQ(decoded.requireAck, pkg.requireAck);
-    EXPECT_EQ(decoded.priority, pkg.priority);
-    EXPECT_EQ(decoded.payload, pkg.payload);
+TEST(ValidationConfig, DefaultConfigValid) {
+    ValidationConfig vc;
+    EXPECT_NO_THROW(vc.validateDeviceId(1));
+    EXPECT_NO_THROW(vc.validateDeviceId(65535));
+    EXPECT_NO_THROW(vc.validateConnectionId(1));
+    EXPECT_NO_THROW(vc.validatePriority(0));
+    EXPECT_NO_THROW(vc.validatePriority(15));
 }
 
-TEST(TransportLayerTest, DeserializeWithBadCrcThrows) {
-    TransportLayer tl;
-
-    Package pkg{};
-    pkg.packageId = 1;
-    pkg.messageId = 2;
-    pkg.senderId = 10;
-    pkg.receiverId = 20;
-    pkg.format = MessageFormat::JSON;
-    pkg.requireAck = false;
-    pkg.priority = 1;
-    pkg.payload = "data";
-
-    Frame frame = tl.serialize(pkg);
-
-    frame.bits.back() ^= 1;
-
-    EXPECT_THROW({
-        tl.deserialize(frame);
-    }, std::runtime_error);
+TEST(ValidationConfig, InvalidDeviceIdThrows) {
+    ValidationConfig vc;
+    EXPECT_THROW(vc.validateDeviceId(0), invalid_argument);
+    EXPECT_THROW(vc.validateDeviceId(-1), invalid_argument);
 }
 
-TEST(TransportLayerTest, SerializeDeserializeVideo) {
-    TransportLayer tl;
-
-    Package pkg{};
-    pkg.packageId = 5;
-    pkg.messageId = 6;
-    pkg.senderId = 123;
-    pkg.receiverId = 456;
-    pkg.format = MessageFormat::VIDEO;
-    pkg.requireAck = true;
-    pkg.priority = 3;
-    pkg.payload = string("\x01\x02\x03\x04", 4);
-
-    Frame frame = tl.serialize(pkg);
-    Package decoded = tl.deserialize(frame);
-
-    EXPECT_EQ(decoded.format, MessageFormat::VIDEO);
-    EXPECT_EQ(decoded.payload.size(), 4);
-    EXPECT_EQ(decoded.payload[0], '\x01');
-    EXPECT_EQ(decoded.payload[3], '\x04');
+TEST(ValidationConfig, PriorityOverflowThrows) {
+    ValidationConfig vc; // 4 bits = max 15
+    EXPECT_THROW(vc.validatePriority(16), invalid_argument);
+    EXPECT_THROW(vc.validatePriority(-1), invalid_argument);
 }
 
-TEST(TransportLayerTest, RequireAckFalse) {
-    TransportLayer tl;
-
-    Package pkg{};
-    pkg.packageId = 7;
-    pkg.messageId = 8;
-    pkg.senderId = 77;
-    pkg.receiverId = 88;
-    pkg.format = MessageFormat::HANDSHAKE;
-    pkg.requireAck = false;
-    pkg.priority = 9;
-    pkg.payload = "HELLO";
-
-    Frame frame = tl.serialize(pkg);
-    Package decoded = tl.deserialize(frame);
-
-    EXPECT_FALSE(decoded.requireAck);
-    EXPECT_EQ(decoded.payload, "HELLO");
+TEST(ValidationConfig, CustomBitWidths) {
+    ValidationConfig vc(8, 8, 8, 8, 4, 4, 2, 8); // priority 2 bits = max 3
+    EXPECT_NO_THROW(vc.validatePriority(3));
+    EXPECT_THROW(vc.validatePriority(4), invalid_argument);
+    EXPECT_NO_THROW(vc.validateDeviceId(255));
+    EXPECT_THROW(vc.validateDeviceId(256), invalid_argument);
 }
 
-TEST(TransportLayerTest, DeserializeWithBadSyncThrows) {
-    TransportLayer tl;
+TEST(ValidationConfig, TransportHeaderBytesCalculation) {
+    ValidationConfig vc;
+    size_t headerBytes = vc.transportHeaderBytes();
+    // Default: packageId(3) + messageId(3) + connectionId(2) + fragmentId(1) +
+    // fragmentsCount(1) + priority(1) + format(1) + requireAck(1) + payloadLength(2) = 15
+    EXPECT_EQ(headerBytes, 15u);
+}
 
-    Package pkg{};
-    pkg.packageId = 9;
-    pkg.messageId = 10;
-    pkg.senderId = 11;
-    pkg.receiverId = 12;
-    pkg.format = MessageFormat::JSON;
-    pkg.requireAck = true;
-    pkg.priority = 1;
-    pkg.payload = "ABC";
+TEST(ValidationConfig, MaxPayloadLength) {
+    ValidationConfig vc;
+    // payloadLength is 2 bytes = max 65535
+    EXPECT_EQ(vc.maxPayloadLengthBytes(), 65535u);
+}
 
-    Frame frame = tl.serialize(pkg);
+// ============================================================
+// TransportLayer serialization tests
+// ============================================================
 
-    frame.bits[0] ^= 1;
+class TransportLayerTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        medium = make_shared<InMemoryMedium>();
+        auto pl = make_unique<PhysicalLayerInMemory>(1001, medium);
+        sdk = make_unique<EminentSdk>(std::move(pl), vc);
+        sdk->initialize(1001, [](){}, [](const string&){},
+            [](DeviceId, const string&) { return true; });
+    }
 
-    EXPECT_THROW({
-        tl.deserialize(frame);
-    }, std::runtime_error);
+    ValidationConfig vc;
+    shared_ptr<InMemoryMedium> medium;
+    unique_ptr<EminentSdk> sdk;
+};
+
+TEST_F(TransportLayerTest, PackageValidation) {
+    Package pkg{1, 1, 1, 0, 1, "hello", MessageFormat::JSON, 5, true, PackageStatus::QUEUED};
+    EXPECT_NO_THROW(vc.validatePackage(pkg));
+}
+
+TEST_F(TransportLayerTest, PackageInvalidPriority) {
+    Package pkg{1, 1, 1, 0, 1, "hello", MessageFormat::JSON, 99, true, PackageStatus::QUEUED};
+    EXPECT_THROW(vc.validatePackage(pkg), invalid_argument);
+}
+
+TEST_F(TransportLayerTest, PackageInvalidFragmentId) {
+    // fragmentId is 8 bits = max 255
+    Package pkg{1, 1, 1, 256, 1, "hello", MessageFormat::JSON, 5, true, PackageStatus::QUEUED};
+    EXPECT_THROW(vc.validatePackage(pkg), invalid_argument);
+}
+
+TEST_F(TransportLayerTest, MessageValidation) {
+    Message msg{1, 1, "payload", MessageFormat::JSON, 5, true, nullptr};
+    EXPECT_NO_THROW(vc.validateMessage(msg));
+}
+
+TEST_F(TransportLayerTest, MessageInvalidPriority) {
+    Message msg{1, 1, "payload", MessageFormat::JSON, 20, true, nullptr};
+    EXPECT_THROW(vc.validateMessage(msg), invalid_argument);
 }

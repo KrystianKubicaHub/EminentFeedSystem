@@ -10,6 +10,7 @@
 #include <logging.hpp>
 #include <commonTypes.hpp>
 #include <ValidationConfig.hpp>
+#include <ThreadSafeQueue.hpp>
 
 using namespace std;
 
@@ -17,10 +18,10 @@ class SessionManager;
 
 class TransportLayer : public LoggerBase {
 public:
-    TransportLayer(queue<Package>& outgoingPackages, SessionManager& sessionManager, const ValidationConfig& validationConfig);
+    TransportLayer(ThreadSafeQueue<Package>& outgoingPackages, SessionManager& sessionManager, const ValidationConfig& validationConfig);
     ~TransportLayer();
     
-    queue<Frame>& getOutgoingFrames();
+    ThreadSafeQueue<Frame>& getOutgoingFrames();
     void receiveFrame(const Frame& frame);
 
 private:
@@ -30,8 +31,8 @@ private:
     uint64_t readBytes(const vector<uint8_t>& bytes, size_t& offset, int byteCount);
     uint32_t crc32(const vector<uint8_t>& dataBytes);
     void workerLoop();
-    queue<Package>& outgoingPackages_;
-    queue<Frame> outgoingFrames_;
+    ThreadSafeQueue<Package>& outgoingPackages_;
+    ThreadSafeQueue<Frame> outgoingFrames_;
     SessionManager& sessionManager_;
     const ValidationConfig& validationConfig_;
     uint8_t packageIdBytes_{};

@@ -9,7 +9,7 @@ using namespace std;
 AbstractPhysicalLayer::AbstractPhysicalLayer(const string& loggerName)
     : LoggerBase(loggerName) {}
 
-void AbstractPhysicalLayer::setEnvironment(queue<Frame>& outgoingFrames,
+void AbstractPhysicalLayer::setEnvironment(ThreadSafeQueue<Frame>& outgoingFrames,
                                            CodingModule& codingModule,
                                            const ValidationConfig& validationConfig) {
     outgoingFramesFromCodingModule_ = &outgoingFrames;

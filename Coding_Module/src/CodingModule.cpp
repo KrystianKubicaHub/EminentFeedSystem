@@ -10,7 +10,7 @@
 using namespace std;
 using namespace chrono;
 
-CodingModule::CodingModule(queue<Frame>& inputFrames, TransportLayer& transportLayer, const ValidationConfig& validationConfig)
+CodingModule::CodingModule(ThreadSafeQueue<Frame>& inputFrames, TransportLayer& transportLayer, const ValidationConfig& validationConfig)
 	: LoggerBase("CodingModule"),
 	  inputFrames_(inputFrames),
 	  transportLayer_(transportLayer),
@@ -19,9 +19,8 @@ CodingModule::CodingModule(queue<Frame>& inputFrames, TransportLayer& transportL
 	worker_ = thread([this]() {
 		try {
 			while (!stopWorker_) {
-				while (!inputFrames_.empty()) {
-					Frame frame = inputFrames_.front();
-					inputFrames_.pop();
+				Frame frame;
+				while (inputFrames_.tryPop(frame)) {
 					ensureFrameEncodable(frame);
 					uint32_t crc = crc32(frame.data);
 					Frame frameWithCrc = frame;
@@ -58,7 +57,7 @@ CodingModule::~CodingModule() {
 	log(LogLevel::DEBUG, "Worker stopped");
 }
 
-queue<Frame>& CodingModule::getOutgoingFrames() {
+ThreadSafeQueue<Frame>& CodingModule::getOutgoingFrames() {
 	return outgoingFrames_;
 }
 

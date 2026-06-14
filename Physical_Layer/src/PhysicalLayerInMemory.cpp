@@ -28,7 +28,7 @@ PhysicalLayerInMemory::~PhysicalLayerInMemory() {
     unregisterParticipant();
 }
 
-void PhysicalLayerInMemory::configure(queue<Frame>& outgoingFramesFromCodingModule,
+void PhysicalLayerInMemory::configure(ThreadSafeQueue<Frame>& outgoingFramesFromCodingModule,
                                       CodingModule& codingModule,
                                       const ValidationConfig& validationConfig) {
     setEnvironment(outgoingFramesFromCodingModule, codingModule, validationConfig);
@@ -84,9 +84,8 @@ void PhysicalLayerInMemory::unregisterParticipant() {
 }
 
 void PhysicalLayerInMemory::processOutgoingFrames() {
-    while (outgoingFramesFromCodingModule_ && !outgoingFramesFromCodingModule_->empty()) {
-        Frame frame = outgoingFramesFromCodingModule_->front();
-        outgoingFramesFromCodingModule_->pop();
+    Frame frame;
+    while (outgoingFramesFromCodingModule_ && outgoingFramesFromCodingModule_->tryPop(frame)) {
         ensureEncodableFrame(frame);
 
         lock_guard<mutex> lock(medium_->mutex);

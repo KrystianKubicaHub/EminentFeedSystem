@@ -8,6 +8,7 @@
 #include <commonTypes.hpp>
 #include <logging.hpp>
 #include <ValidationConfig.hpp>
+#include <ThreadSafeQueue.hpp>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -45,7 +46,7 @@ private:
     uint64_t maxFragmentIdValue_ = 0;
     uint64_t maxFragmentsCountValue_ = 0;
     uint64_t maxPriorityValue_ = 0;
-    queue<Package> outgoingPackages_;
+    ThreadSafeQueue<Package> outgoingPackages_;
     unordered_map<MessageId, PendingMessageInfo> pendingMessages_;
     unordered_map<MessageId, vector<Package>> receivedPackages_;
     unordered_map<PackageId, MessageId> packageToMessage_;
@@ -69,6 +70,12 @@ private:
 public:
     bool getNextPackage(Package& out);
     void receivePackage(const Package& pkg);
-    queue<Package>& getOutgoingPackages() { return outgoingPackages_; }
+    ThreadSafeQueue<Package>& getOutgoingPackages() { return outgoingPackages_; }
+
+    // Retransmission configuration
+    void setRetransmissionConfig(int maxAttempts, chrono::milliseconds interval);
+    int getMaxRetransmitAttempts() const { return maxRetransmitAttempts_; }
+    chrono::milliseconds getRetransmitInterval() const { return retransmitInterval_; }
+
     ~SessionManager();
 };

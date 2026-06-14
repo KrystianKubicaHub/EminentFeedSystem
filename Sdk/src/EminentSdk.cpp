@@ -5,14 +5,17 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <limits>
 #include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 using namespace std;
+using namespace chrono;
 
 EminentSdk::EminentSdk(unique_ptr<AbstractPhysicalLayer> physicalLayer,
                        const ValidationConfig& validationConfig,
@@ -51,8 +54,13 @@ EminentSdk::EminentSdk(int localPort, const string& remoteHost, int remotePort, 
     remotePort_ = remotePort;
 }
 
+EminentSdk::~EminentSdk() {
+    shutdown();
+}
+
 
 void EminentSdk::onMessageReceived(const Message& msg) {
+    lock_guard<recursive_mutex> lock(mutex_);
     ostringstream oss;
     oss << "onMessageReceived id=" << msg.id
         << " connId=" << msg.connId
@@ -87,6 +95,15 @@ void EminentSdk::onMessageReceived(const Message& msg) {
             }
             break;
         }
+        case MessageFormat::DISCONNECT:
+            handleDisconnectMessage(msg);
+            break;
+        case MessageFormat::HEARTBEAT:
+            handleHeartbeat(msg);
+            break;
+        case MessageFormat::HEARTBEAT_ACK:
+            handleHeartbeatAck(msg);
+            break;
         default:
             log(LogLevel::WARN, string("Unknown message format: ") + to_string(static_cast<int>(msg.format)));
             break;
@@ -182,7 +199,21 @@ void EminentSdk::handleJsonMessage(const Message& msg) {
 }
 
 void EminentSdk::handleVideoMessage(const Message& msg) {
-    log(LogLevel::INFO, string("VIDEO messages not supported; payload size=") + to_string(msg.payload.size()));
+    // VIDEO format is used internally for binary user data
+    auto it = findConnection(msg.connId);
+    if (it == connections_.end()) {
+        log(LogLevel::WARN, string("Binary message for unknown connectionId=") + to_string(msg.connId));
+        return;
+    }
+
+    log(LogLevel::DEBUG, string("Binary message on connection ") + to_string(it->second.id) +
+        " size=" + to_string(msg.payload.size()));
+
+    if (it->second.onMessage) {
+        it->second.onMessage(msg);
+    } else {
+        log(LogLevel::WARN, string("No onMessage callback for connection ") + to_string(it->second.id));
+    }
 }
 
 string EminentSdk::statusToString(ConnectionStatus status) const {
@@ -201,6 +232,7 @@ string EminentSdk::statusToString(ConnectionStatus status) const {
 }
 
 void EminentSdk::complexConsoleInfo(const string& title) {
+    lock_guard<recursive_mutex> lock(mutex_);
     ostringstream summary;
     summary << "\n\n";
     if (!title.empty()) {
@@ -344,6 +376,23 @@ void EminentSdk::handleHandshakeResponse(const Message& msg, const HandshakePayl
     conn.specialCode = payload.specialCode;
     conn.status = ConnectionStatus::ACTIVE;
     connections_[combinedId] = conn;
+
+    // Remove from pending handshakes (handshake succeeded)
+    pendingHandshakes_.erase(
+        remove_if(pendingHandshakes_.begin(), pendingHandshakes_.end(),
+            [&](const PendingHandshake& ph) { return ph.initialCid == msg.connId; }),
+        pendingHandshakes_.end()
+    );
+
+    // Migrate heartbeat state from initial cid to final combined id
+    auto hbIt = heartbeats_.find(msg.connId);
+    if (hbIt != heartbeats_.end()) {
+        HeartbeatState hb = hbIt->second;
+        hb.lastSent = steady_clock::now();
+        hb.lastReceived = steady_clock::now();
+        heartbeats_.erase(hbIt);
+        heartbeats_[combinedId] = hb;
+    }
 
     log(LogLevel::INFO, string("Connection ") + to_string(combinedId) + " is now ACTIVE");
 
@@ -512,6 +561,11 @@ void EminentSdk::initialize(
     onConnectionEstablished_ = onConnectionEstablished; 
    
     initialized_ = true;
+
+    // Start heartbeat worker thread
+    stopHeartbeat_ = false;
+    heartbeatWorker_ = thread([this]() { heartbeatLoop(); });
+
     log(LogLevel::INFO, string("SDK initialized for device ") + to_string(selfId));
     if (onSuccess) {
         onSuccess();
@@ -582,8 +636,12 @@ void EminentSdk::connect(
     function<void(const string&)> onTrouble,
     function<void()> onDisconnected,
     function<void(ConnectionId)> onConnected,
-    function<void(const Message&)> onMessage
+    function<void(const Message&)> onMessage,
+    chrono::milliseconds heartbeatInterval,
+    function<void(ConnectionId)> onHeartbeatMissed,
+    chrono::milliseconds handshakeTimeout
 ) {
+    lock_guard<recursive_mutex> lock(mutex_);
     try {
         validationConfig_.validateDeviceId(targetId);
         validationConfig_.validatePriority(defaultPriority);
@@ -623,17 +681,54 @@ void EminentSdk::connect(
     }
     outgoingQueue_.push(handshakeMsg);
 
-    log(LogLevel::INFO, string("Initiating handshake to device ") + to_string(targetId) + " connectionId=" + to_string(cid));
+    // Store heartbeat config under initial cid — will be migrated to combined id after handshake
+    HeartbeatState hb;
+    hb.interval = heartbeatInterval;
+    hb.lastReceived = steady_clock::now();
+    hb.lastSent = steady_clock::now();
+    hb.waitingForResponse = false;
+    hb.onMissed = onHeartbeatMissed;
+    heartbeats_[cid] = hb;
+
+    // Register handshake timeout
+    PendingHandshake ph;
+    ph.initialCid = cid;
+    ph.deadline = steady_clock::now() + handshakeTimeout;
+    ph.onFailure = onFailure;
+    pendingHandshakes_.push_back(ph);
+
+    log(LogLevel::INFO, string("Initiating handshake to device ") + to_string(targetId) +
+        " connectionId=" + to_string(cid) +
+        " timeout=" + to_string(handshakeTimeout.count()) + "ms");
+}
+
+void EminentSdk::disconnect(ConnectionId id) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    auto it = findConnection(id);
+    if (it == connections_.end()) {
+        log(LogLevel::WARN, string("disconnect: connection ") + to_string(id) + " not found");
+        return;
+    }
+
+    // Send disconnect message to remote side
+    sendDisconnectMessage(it->second.id);
+
+    // Invoke local onDisconnected callback
+    if (it->second.onDisconnected) {
+        it->second.onDisconnected();
+    }
+
+    // Remove heartbeat state
+    heartbeats_.erase(it->second.id);
+
+    // Remove connection
+    ConnectionId actualId = it->second.id;
+    connections_.erase(it);
+    log(LogLevel::INFO, string("Connection ") + to_string(actualId) + " disconnected");
 }
 
 void EminentSdk::close(ConnectionId id) {
-    if (connections_.count(id)) {
-        if (connections_[id].onDisconnected) {
-            connections_[id].onDisconnected();
-        }
-        connections_.erase(id);
-        log(LogLevel::INFO, string("Connection ") + to_string(id) + " closed");
-    }
+    disconnect(id);
 }
 
 void EminentSdk::send(
@@ -644,6 +739,7 @@ void EminentSdk::send(
     bool requireAck,
     function<void()> onDelivered
 ) {
+    lock_guard<recursive_mutex> lock(mutex_);
     if (!connections_.count(id)) {
         throw runtime_error("Send failed: invalid connection ID.");
     }
@@ -670,20 +766,11 @@ void EminentSdk::send(
 }
 
 void EminentSdk::setDefaultPriority(ConnectionId id, Priority priority) {
-    auto it = connections_.find(id);
+    lock_guard<recursive_mutex> lock(mutex_);
+    auto it = findConnection(id);
     if (it == connections_.end()) {
-        auto match = find_if(
-            connections_.begin(),
-            connections_.end(),
-            [id](const auto& entry) {
-                return entry.second.id == id;
-            }
-        );
-        if (match == connections_.end()) {
-            log(LogLevel::WARN, string("setDefaultPriority: connection ") + to_string(id) + " not found");
-            return;
-        }
-        it = match;
+        log(LogLevel::WARN, string("setDefaultPriority: connection ") + to_string(id) + " not found");
+        return;
     }
 
     try {
@@ -699,23 +786,14 @@ void EminentSdk::setDefaultPriority(ConnectionId id, Priority priority) {
 }
 
 void EminentSdk::setOnMessageHandler(ConnectionId id, function<void(const Message&)> handler) {
-    auto it = connections_.find(id);
+    lock_guard<recursive_mutex> lock(mutex_);
+    auto it = findConnection(id);
     if (it == connections_.end()) {
-        auto match = find_if(
-            connections_.begin(),
-            connections_.end(),
-            [id](const auto& entry) {
-                return entry.second.id == id;
-            }
-        );
-        if (match == connections_.end()) {
-            log(LogLevel::WARN, string("setOnMessageHandler: connection ") + to_string(id) + " not found");
-            return;
-        }
-        it = match;
+        log(LogLevel::WARN, string("setOnMessageHandler: connection ") + to_string(id) + " not found");
+        return;
     }
 
-    it->second.onMessage = move(handler);
+    it->second.onMessage = std::move(handler);
     log(LogLevel::INFO, string("Connection ") + to_string(it->second.id) + " onMessage handler updated");
 }
 
@@ -723,6 +801,7 @@ void EminentSdk::getStats(
     function<void(const vector<ConnectionStats>&)> onStats,
     ConnectionId id
 ) {
+    lock_guard<recursive_mutex> lock(mutex_);
     vector<ConnectionStats> stats;
     if (id == -1) {
         for (auto& [cid, conn] : connections_) {
@@ -732,4 +811,406 @@ void EminentSdk::getStats(
         stats.push_back({id, 12.0, 0.05, 6.0, 0});
     }
     onStats(stats);
+}
+
+// ============================================================
+// Simplified send (uses connection default priority)
+// ============================================================
+
+void EminentSdk::send(
+    ConnectionId id,
+    const string& payload,
+    function<void()> onDelivered
+) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    auto it = findConnection(id);
+    if (it == connections_.end()) {
+        throw runtime_error("Send failed: invalid connection ID.");
+    }
+    send(id, payload, MessageFormat::JSON, it->second.defaultPriority, true, onDelivered);
+}
+
+// ============================================================
+// Binary send
+// ============================================================
+
+void EminentSdk::sendBinary(
+    ConnectionId id,
+    const vector<uint8_t>& data,
+    function<void()> onDelivered
+) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    auto it = findConnection(id);
+    if (it == connections_.end()) {
+        throw runtime_error("sendBinary failed: invalid connection ID.");
+    }
+    sendBinary(id, data, it->second.defaultPriority, true, onDelivered);
+}
+
+void EminentSdk::sendBinary(
+    ConnectionId id,
+    const vector<uint8_t>& data,
+    Priority priority,
+    bool requireAck,
+    function<void()> onDelivered
+) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    if (!connections_.count(id)) {
+        auto it = findConnection(id);
+        if (it == connections_.end()) {
+            throw runtime_error("sendBinary failed: invalid connection ID.");
+        }
+        id = it->second.id;
+    }
+    if (connections_.count(id) && connections_[id].status == ConnectionStatus::PENDING) {
+        throw runtime_error("sendBinary failed: connection is still pending.");
+    }
+
+    try {
+        validationConfig_.validatePriority(priority);
+    } catch (const exception& ex) {
+        throw runtime_error(string("sendBinary failed: ") + ex.what());
+    }
+
+    // Store binary data in string (std::string can hold arbitrary bytes)
+    string payload(data.begin(), data.end());
+
+    MessageId mid = nextMessageId();
+    Message msg{ mid, id, payload, MessageFormat::VIDEO, priority, requireAck, onDelivered };
+    try {
+        validationConfig_.validateMessage(msg);
+    } catch (const exception& ex) {
+        throw runtime_error(string("sendBinary failed: ") + ex.what());
+    }
+    outgoingQueue_.push(msg);
+
+    log(LogLevel::DEBUG, string("Queued binary message id=") + to_string(mid) +
+        " connection=" + to_string(id) + " size=" + to_string(data.size()));
+}
+
+// ============================================================
+// setOnDisconnected
+// ============================================================
+
+void EminentSdk::setOnDisconnected(ConnectionId id, function<void()> handler) {
+    lock_guard<recursive_mutex> lock(mutex_);
+    auto it = findConnection(id);
+    if (it == connections_.end()) {
+        log(LogLevel::WARN, string("setOnDisconnected: connection ") + to_string(id) + " not found");
+        return;
+    }
+    it->second.onDisconnected = std::move(handler);
+    log(LogLevel::INFO, string("Connection ") + to_string(it->second.id) + " onDisconnected handler updated");
+}
+
+// ============================================================
+// getActiveConnectionIds / getConnectedDeviceIds
+// ============================================================
+
+vector<ConnectionId> EminentSdk::getActiveConnectionIds() const {
+    lock_guard<recursive_mutex> lock(mutex_);
+    vector<ConnectionId> ids;
+    for (const auto& [cid, conn] : connections_) {
+        if (conn.status == ConnectionStatus::ACTIVE) {
+            ids.push_back(conn.id);
+        }
+    }
+    return ids;
+}
+
+vector<DeviceId> EminentSdk::getConnectedDeviceIds() const {
+    lock_guard<recursive_mutex> lock(mutex_);
+    vector<DeviceId> ids;
+    for (const auto& [cid, conn] : connections_) {
+        if (conn.status == ConnectionStatus::ACTIVE) {
+            ids.push_back(conn.remoteId);
+        }
+    }
+    return ids;
+}
+
+// ============================================================
+// Disconnect protocol
+// ============================================================
+
+void EminentSdk::sendDisconnectMessage(ConnectionId id) {
+    try {
+        MessageId mid = nextMessageId();
+        ostringstream oss;
+        oss << "{\"deviceId\": " << deviceId_ << ", \"connId\": " << id << "}";
+        string payload = oss.str();
+        Message msg{mid, id, payload, MessageFormat::DISCONNECT, 0, false, nullptr};
+        validationConfig_.validateMessage(msg);
+        outgoingQueue_.push(msg);
+        log(LogLevel::INFO, string("Sent DISCONNECT for connection ") + to_string(id));
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Failed to send DISCONNECT: ") + ex.what());
+    }
+}
+
+void EminentSdk::handleDisconnectMessage(const Message& msg) {
+    auto it = findConnection(msg.connId);
+    if (it == connections_.end()) {
+        log(LogLevel::WARN, string("DISCONNECT for unknown connection ") + to_string(msg.connId));
+        return;
+    }
+
+    log(LogLevel::INFO, string("Received DISCONNECT for connection ") + to_string(it->second.id) +
+        " from device " + to_string(it->second.remoteId));
+
+    // Invoke onDisconnected callback
+    if (it->second.onDisconnected) {
+        it->second.onDisconnected();
+    }
+
+    // Remove heartbeat state
+    heartbeats_.erase(it->second.id);
+
+    // Remove connection
+    connections_.erase(it);
+}
+
+// ============================================================
+// Heartbeat
+// ============================================================
+
+void EminentSdk::heartbeatLoop() {
+    while (!stopHeartbeat_.load()) {
+        {
+            lock_guard<recursive_mutex> lock(mutex_);
+            auto now = steady_clock::now();
+
+            // Check for handshake timeouts
+            checkHandshakeTimeouts();
+
+            for (auto& [connId, hb] : heartbeats_) {
+                // Only send heartbeats for ACTIVE connections
+                auto it = connections_.find(connId);
+                if (it == connections_.end() || it->second.status != ConnectionStatus::ACTIVE) {
+                    continue;
+                }
+
+                // Check if we're waiting for a response that's overdue
+                if (hb.waitingForResponse) {
+                    auto elapsed = duration_cast<milliseconds>(now - hb.lastSent);
+                    if (elapsed >= hb.interval) {
+                        // Heartbeat missed!
+                        log(LogLevel::WARN, string("Heartbeat missed for connection ") + to_string(connId));
+                        if (hb.onMissed) {
+                            hb.onMissed(connId);
+                        }
+                        hb.waitingForResponse = false;
+                        // Immediately send next heartbeat
+                        sendHeartbeat(connId);
+                        hb.lastSent = now;
+                        hb.waitingForResponse = true;
+                    }
+                } else {
+                    // Time to send a new heartbeat?
+                    auto elapsed = duration_cast<milliseconds>(now - hb.lastSent);
+                    if (elapsed >= hb.interval) {
+                        sendHeartbeat(connId);
+                        hb.lastSent = now;
+                        hb.waitingForResponse = true;
+                    }
+                }
+            }
+        } // mutex released before sleep
+
+        this_thread::sleep_for(100ms);
+    }
+}
+
+void EminentSdk::sendHeartbeat(ConnectionId connId) {
+    try {
+        MessageId mid = nextMessageId();
+        ostringstream oss;
+        oss << "{\"deviceId\": " << deviceId_ << ", \"ts\": " 
+            << duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count() << "}";
+        string payload = oss.str();
+        Message msg{mid, connId, payload, MessageFormat::HEARTBEAT, 0, false, nullptr};
+        validationConfig_.validateMessage(msg);
+        outgoingQueue_.push(msg);
+        log(LogLevel::DEBUG, string("Sent HEARTBEAT on connection ") + to_string(connId));
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Failed to send HEARTBEAT: ") + ex.what());
+    }
+}
+
+void EminentSdk::handleHeartbeat(const Message& msg) {
+    // Respond with HEARTBEAT_ACK
+    log(LogLevel::DEBUG, string("Received HEARTBEAT on connection ") + to_string(msg.connId));
+    try {
+        MessageId mid = nextMessageId();
+        ostringstream oss;
+        oss << "{\"deviceId\": " << deviceId_ << ", \"ts\": "
+            << duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count() << "}";
+        string payload = oss.str();
+        Message ack{mid, msg.connId, payload, MessageFormat::HEARTBEAT_ACK, 0, false, nullptr};
+        validationConfig_.validateMessage(ack);
+        outgoingQueue_.push(ack);
+        log(LogLevel::DEBUG, string("Sent HEARTBEAT_ACK on connection ") + to_string(msg.connId));
+    } catch (const exception& ex) {
+        log(LogLevel::WARN, string("Failed to send HEARTBEAT_ACK: ") + ex.what());
+    }
+}
+
+void EminentSdk::handleHeartbeatAck(const Message& msg) {
+    log(LogLevel::DEBUG, string("Received HEARTBEAT_ACK on connection ") + to_string(msg.connId));
+    auto it = heartbeats_.find(msg.connId);
+    if (it != heartbeats_.end()) {
+        it->second.lastReceived = steady_clock::now();
+        it->second.waitingForResponse = false;
+    }
+}
+
+// ============================================================
+// Shutdown
+// ============================================================
+
+void EminentSdk::shutdown() {
+    if (shutdownRequested_.exchange(true)) {
+        return; // Already shutting down
+    }
+
+    log(LogLevel::INFO, "Shutdown requested");
+
+    // Stop heartbeat worker (must NOT hold mutex during join — worker locks mutex)
+    stopHeartbeat_ = true;
+    if (heartbeatWorker_.joinable()) {
+        heartbeatWorker_.join();
+    }
+
+    // Now safe to lock — heartbeat thread is stopped
+    lock_guard<recursive_mutex> lock(mutex_);
+
+    // Disconnect all active connections (send DISCONNECT to each)
+    vector<ConnectionId> toDisconnect;
+    for (const auto& [cid, conn] : connections_) {
+        if (conn.status == ConnectionStatus::ACTIVE) {
+            toDisconnect.push_back(cid);
+        }
+    }
+    for (ConnectionId cid : toDisconnect) {
+        sendDisconnectMessage(cid);
+        if (connections_.count(cid) && connections_[cid].onDisconnected) {
+            connections_[cid].onDisconnected();
+        }
+    }
+    connections_.clear();
+    heartbeats_.clear();
+    pendingHandshakes_.clear();
+
+    // Allow time for disconnect messages to be sent
+    this_thread::sleep_for(50ms);
+
+    log(LogLevel::INFO, "Shutdown complete");
+}
+
+// ============================================================
+// Handshake timeout check
+// ============================================================
+
+void EminentSdk::checkHandshakeTimeouts() {
+    auto now = steady_clock::now();
+    vector<function<void()>> callbacks;
+
+    auto it = pendingHandshakes_.begin();
+    while (it != pendingHandshakes_.end()) {
+        // Check if this connection is still PENDING (not yet completed handshake)
+        auto connIt = connections_.find(it->initialCid);
+        if (connIt == connections_.end()) {
+            // Connection was already removed (migrated to combined id = handshake succeeded)
+            it = pendingHandshakes_.erase(it);
+            continue;
+        }
+
+        if (connIt->second.status == ConnectionStatus::ACTIVE) {
+            // Already active — handshake completed before timeout
+            it = pendingHandshakes_.erase(it);
+            continue;
+        }
+
+        if (now >= it->deadline) {
+            // Timeout! Remove the pending connection and fire onFailure
+            log(LogLevel::WARN, string("Handshake timeout for connectionId=") + to_string(it->initialCid));
+
+            auto failCb = it->onFailure;
+            ConnectionId cid = it->initialCid;
+
+            // Cleanup heartbeat state
+            heartbeats_.erase(cid);
+            // Remove the pending connection
+            connections_.erase(connIt);
+
+            it = pendingHandshakes_.erase(it);
+
+            if (failCb) {
+                callbacks.push_back([failCb]() {
+                    failCb("Handshake timeout: remote device did not respond");
+                });
+            }
+        } else {
+            ++it;
+        }
+    }
+
+    // Fire callbacks outside the loop to avoid issues
+    for (auto& cb : callbacks) {
+        cb();
+    }
+}
+
+// ============================================================
+// Retransmission configuration
+// ============================================================
+
+void EminentSdk::setRetransmissionConfig(int maxAttempts, chrono::milliseconds interval) {
+    if (maxAttempts < 1) {
+        log(LogLevel::WARN, "setRetransmissionConfig: maxAttempts must be >= 1, ignoring");
+        return;
+    }
+    if (interval.count() < 10) {
+        log(LogLevel::WARN, "setRetransmissionConfig: interval must be >= 10ms, ignoring");
+        return;
+    }
+
+    sessionManager_.setRetransmissionConfig(maxAttempts, interval);
+    log(LogLevel::INFO, string("Retransmission config updated: maxAttempts=") +
+        to_string(maxAttempts) + " interval=" + to_string(interval.count()) + "ms");
+}
+
+int EminentSdk::getMaxRetransmitAttempts() const {
+    return sessionManager_.getMaxRetransmitAttempts();
+}
+
+chrono::milliseconds EminentSdk::getRetransmitInterval() const {
+    return sessionManager_.getRetransmitInterval();
+}
+
+// ============================================================
+// Transport error callback
+// ============================================================
+
+void EminentSdk::setOnTransportError(function<void(const string&)> handler) {
+    onTransportError_ = std::move(handler);
+    log(LogLevel::INFO, "Transport error handler registered");
+}
+
+// ============================================================
+// findConnection helper
+// ============================================================
+
+unordered_map<int, Connection>::iterator EminentSdk::findConnection(ConnectionId id) {
+    auto it = connections_.find(id);
+    if (it != connections_.end()) {
+        return it;
+    }
+    return find_if(
+        connections_.begin(),
+        connections_.end(),
+        [id](const auto& entry) {
+            return entry.second.id == id;
+        }
+    );
 }
